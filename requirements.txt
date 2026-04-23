@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+playwright
+langchain-groq
+python-dotenv
+pydantic
