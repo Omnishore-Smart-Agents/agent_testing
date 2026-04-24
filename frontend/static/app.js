@@ -1,3 +1,10 @@
+// Global variable to store selected browser
+let selectedBrowser = 'chromium';
+
+function escapeHTML(str) {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     const runBtn = document.getElementById('run-btn');
     const urlInput = document.getElementById('url-input');
@@ -7,26 +14,157 @@ document.addEventListener('DOMContentLoaded', () => {
     const metricTotal = document.getElementById('metric-total');
     const metricPassed = document.getElementById('metric-passed');
     const metricFailed = document.getElementById('metric-failed');
+    const logsPanel = document.getElementById('logs-panel');
+    const logsContent = document.getElementById('logs-content');
+    const clearLogsBtn = document.getElementById('clear-logs-btn');
+    const exportWordBtn = document.getElementById('export-word-btn');
+
+    // Browser select elements
+    const selectBtn = document.getElementById('browser-select-btn');
+    const dropdownEl = document.getElementById('browser-dropdown');
+    const selectedLabel = selectBtn?.querySelector('.selected-label');
+    const dropdownOptions = document.querySelectorAll('.dropdown-option');
+
+    // ========================================
+    // BROWSER SELECTION HANDLING
+    // ========================================
+
+    function openDropdown() {
+        selectBtn?.classList.add('open');
+        dropdownEl?.classList.remove('hidden');
+    }
+
+    function closeDropdown() {
+        selectBtn?.classList.remove('open');
+        dropdownEl?.classList.add('hidden');
+    }
+
+    // Toggle dropdown on button click
+    selectBtn?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (dropdownEl?.classList.contains('hidden')) {
+            openDropdown();
+        } else {
+            closeDropdown();
+        }
+    });
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', () => {
+        closeDropdown();
+    });
+
+    // Prevent dropdown close when clicking inside
+    dropdownEl?.addEventListener('click', (e) => {
+        e.stopPropagation();
+    });
+
+    // Handle option selection
+    dropdownOptions.forEach(option => {
+        option.addEventListener('click', () => {
+            const value = option.dataset.value;
+            const label = option.textContent;
+
+            // Update selected browser
+            selectedBrowser = value;
+
+            // Update button label
+            if (selectedLabel) selectedLabel.textContent = label;
+
+            // Update active state
+            dropdownOptions.forEach(opt => opt.classList.remove('active'));
+            option.classList.add('active');
+
+            // Close dropdown
+            closeDropdown();
+
+            console.log('Browser selected:', selectedBrowser);
+        });
+    });
+
+    // ========================================
+    // RUN TESTS
+    // ========================================
 
     runBtn.addEventListener('click', runTests);
 
-    async function runTests() {
+    // Clear logs button
+    clearLogsBtn?.addEventListener('click', () => {
+        if (logsContent) logsContent.innerHTML = '';
+        if (logsPanel) logsPanel.classList.add('hidden');
+    });
+
+    // Export Word button
+    exportWordBtn?.addEventListener('click', async () => {
         const url = urlInput.value.trim();
         if (!url) {
+            statusEl.textContent = 'Please enter a URL first.';
+            return;
+        }
+
+        exportWordBtn.disabled = true;
+        exportWordBtn.querySelector('span').textContent = 'Generating...';
+
+        try {
+            const res = await fetch('/api/export-word', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    url,
+                    browser: selectedBrowser
+                })
+            });
+
+            if (!res.ok) throw new Error('Export failed');
+
+            const blob = await res.blob();
+            const blobUrl = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = blobUrl;
+            a.download = `rapport_test_${Date.now()}.docx`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(blobUrl);
+
+            statusEl.textContent = 'Word report downloaded!';
+        } catch (err) {
+            statusEl.textContent = 'Export failed: ' + err.message;
+        } finally {
+            exportWordBtn.disabled = false;
+            exportWordBtn.querySelector('span').textContent = 'Télécharger Word';
+        }
+    });
+
+    async function runTests() {
+        const url = urlInput.value.trim();
+
+        if (!url) {
             statusEl.textContent = 'Please enter a URL.';
+            return;
+        }
+
+        // Validate browser selection
+        if (!selectedBrowser) {
+            statusEl.textContent = 'Please select a browser first.';
             return;
         }
 
         setLoading(true);
         statusEl.textContent = 'Running agent...';
         resultsPanel.classList.add('hidden');
+        logsPanel.classList.remove('hidden');
+        logsContent.innerHTML = '<div class="log-line info">Initializing...</div>';
         testList.innerHTML = '';
 
         try {
             const res = await fetch('/api/run-agent', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url })
+                body: JSON.stringify({
+                    url,
+                    browser: selectedBrowser
+                })
             });
 
             const data = await res.json();
@@ -60,6 +198,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function renderResults(data) {
         resultsPanel.classList.remove('hidden');
+
+        const logsPanel = document.getElementById('logs-panel');
+        const logsContent = document.getElementById('logs-content');
+        
+        if (data.logs && data.logs.length > 0) {
+            logsPanel.classList.remove('hidden');
+            logsContent.innerHTML = data.logs.map(log => {
+                let cls = 'info';
+                if (log.includes('PHASE')) cls = 'phase';
+                else if (log.includes('Browser:')) cls = 'browser';
+                else if (log.includes('✅')) cls = 'success';
+                else if (log.includes('⚠️')) cls = 'warning';
+                else if (log.includes('[THINK]')) cls = 'think';
+                else if (log.includes('📸')) cls = 'screenshot';
+                else if (log.includes('🚀 [ACT]')) cls = 'test';
+                return `<div class="log-line ${cls}">${escapeHTML(log)}</div>`;
+            }).join('');
+            logsContent.scrollTop = logsContent.scrollHeight;
+        }
 
         const results = data.results || [];
         metricTotal.textContent = data.total_tests || results.length;

@@ -1,4 +1,5 @@
 import re
+import traceback
 from tools.llm import generate_test_cases
 
 
@@ -13,12 +14,21 @@ class Planner:
         if credentials:
             print(f"  Credentials: {credentials.get('email')} (will be used for TC001)")
 
-        test_cases = generate_test_cases(fields, url, page_info)
+        try:
+            test_cases = generate_test_cases(fields, url, page_info)
+        except Exception as e:
+            print(f"[THINK] Error generating test cases: {e}")
+            traceback.print_exc()
+            test_cases = []
 
         if credentials:
             test_cases = self._inject_credentials(test_cases, credentials)
 
-        print(f"[THINK] Generated {len(test_cases)} test cases.")
+        if test_cases:
+            print(f"[THINK] Generated {len(test_cases)} test cases.")
+        else:
+            print(f"[THINK] No test cases returned!")
+
         return test_cases
 
     def _inject_credentials(self, test_cases: list, credentials: dict) -> list:

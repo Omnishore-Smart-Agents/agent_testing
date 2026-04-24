@@ -33,9 +33,11 @@ The JSON must have these exact keys:
     human_prompt = f"URL: {url}\n\nPage text content:\n{page_text[:3000]}"
     response = model.invoke([SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)])
     raw = response.content.replace("```json", "").replace("```", "").strip()
+    print(f"[DEBUG] detect_page_info raw: {raw[:300]}...")
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
+        print(f"[DEBUG] detect_page_info failed to parse")
         return {
             "language": "en", "direction": "ltr", "form_type": "unknown",
             "labels": {}, "submit_buttons": [], "page_title": "", "signup_url_hint": None
@@ -99,7 +101,13 @@ TERMS/NEWSLETTER CHECKBOXES:
 - terms / cgu / conditions / accept_terms / accept_cgu / newsletter / newsletter_optin
 
 Generate REALISTIC data matching the page language/country:
-- French (fr): names like Jean/Marie/Pierre, phone +33612345678, cities Paris/Lyon/Marseille
+- French (fr): na￼
+Chromium history
+Tabs from other devices
+Delete browsing data
+By date
+By group
+mes like Jean/Marie/Pierre, phone +33612345678, cities Paris/Lyon/Marseille
 - Arabic (ar): names like محمد/فاطمة/عمر, phone +212612345678, cities الدار البيضاء/الرباط/مراكش
 - Spanish (es): names like Juan/María/Pedro, phone +34612345678, cities Madrid/Barcelona/Valencia
 - English (en): names like John/Mary/Peter, phone +15551234567, cities New York/Los Angeles/London
@@ -169,9 +177,15 @@ def generate_test_cases(fields: list, url: str, page_info: dict) -> list:
     model = get_llm()
     lang = page_info.get("language", "en")
     form_type = page_info.get("form_type", "login")
+    
+    print(f"[DEBUG] generate_test_cases: form_type={form_type}, lang={lang}, fields={len(fields)}")
+    print(f"[DEBUG] URL being tested: {url}")
 
+    # Always generate LOGIN test cases regardless of form_type detected on page
+    # User wants to test authentication
     if form_type == "signup":
-        return _generate_signup_cases(model, fields, url, lang)
+        print(f"[DEBUG] Forcing login test cases (form was signup)")
+        return _generate_login_cases(model, fields, url, lang)
     elif form_type == "reset_password":
         return _generate_reset_cases(model, fields, url, lang)
     else:
@@ -202,7 +216,9 @@ Each object must have:
 """
     fields_json = json.dumps(fields, indent=2)
     human_prompt = f"URL: {url}\nFields detected: {fields_json}"
+    print(f"[DEBUG] Calling LLM for login test cases, fields={fields_json[:200]}...")
     response = model.invoke([SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)])
+    print(f"[DEBUG] LLM response: {response.content[:300]}...")
     return _parse_json_response(response.content)
 
 
@@ -325,6 +341,9 @@ Rules:
 
 def _parse_json_response(content: str) -> list:
     raw = content.replace("```json", "").replace("```", "").strip()
+    print(f"[DEBUG] LLM raw response length: {len(raw)}")
+    
+    # Try parsing first
     try:
         data = json.loads(raw)
         if isinstance(data, list):
@@ -332,6 +351,38 @@ def _parse_json_response(content: str) -> list:
         elif isinstance(data, dict) and "test_cases" in data:
             return data["test_cases"]
         return [data]
-    except json.JSONDecodeError:
-        print(f"Error decoding JSON: {raw[:200]}")
-        return []
+    except json.JSONDecodeError as e:
+        print(f"[DEBUG] JSON decode error: {e}")
+    
+    # Try to fix common JSON issues
+    import re
+    
+    # Try to extract just the array portion
+    match = re.search(r'\[.*\]', raw, re.DOTALL)
+    if match:
+        fixed = match.group(0)
+        try:
+            data = json.loads(fixed)
+            print(f"[DEBUG] Fixed JSON by extracting array")
+            return data if isinstance(data, list) else [data]
+        except:
+            pass
+    
+    # Try to parse each test case individually
+    test_cases = []
+    tc_matches = re.findall(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', raw)
+    for tc_str in tc_matches:
+        if '"id"' in tc_str and ('"steps"' in tc_str or '"expected"' in tc_str):
+            try:
+                tc = json.loads(tc_str)
+                if "id" in tc:
+                    test_cases.append(tc)
+            except:
+                continue
+    
+    if test_cases:
+        print(f"[DEBUG] Extracted {len(test_cases)} test cases individually")
+        return test_cases
+    
+    print(f"[DEBUG] Failed raw: {raw[:300]}")
+    return []
