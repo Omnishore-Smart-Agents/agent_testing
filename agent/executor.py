@@ -1,123 +1,99 @@
 import asyncio
-import hashlib
-from tools.llm import verify_result
-
+import os
 
 class Executor:
     def __init__(self, browser_wrapper):
         self.browser = browser_wrapper
 
-    async def execute(self, test_case: dict, url: str, page_info: dict, credentials: dict = None):
-        tc_id = test_case.get("id", "unknown")
-        print(f"🚀 [ACT] Executing: {tc_id} - {test_case.get('description')}")
+    async def fill_form(self, form_data: dict) -> dict:
+        """
+        Fill a form with the given data. form_data is {identifier: value}.
+        Returns a dict of results: {identifier: 'ok' | 'failed'}.
+        """
+        results = {}
+        for identifier, value in form_data.items():
+            if not value:
+                continue
+            # Try as regular input first
+            success = await self.browser.fill_field(identifier, str(value))
+            if not success:
+                # Try as select dropdown
+                success = await self.browser.select_option(identifier, str(value))
+            
+            status = "ok" if success else "failed"
+            results[identifier] = status
+            symbol = "✅" if success else "❌"
+            print(f"  {symbol} {identifier} = '{value}' -> {status}")
+            await asyncio.sleep(0.3)
 
-        result = {
-            "test_case": test_case,
-            "status": "passed",
-            "error": None,
-            "screenshots": [],
-        }
+        return results
 
-        try:
-            await self.browser.reset_session()
-            await self.browser.open_page(url)
-            await self.browser.dismiss_cookies()
+    async def click_submit(self, buttons: list) -> bool:
+        """
+        Try to click the submit/register button from a list of visible buttons.
+        """
+        submit_keywords = [
+            "submit", "register", "sign up", "create", "join",
+            "s'inscrire", "valider", "envoyer", "soumettre", "adhérer",
+            "confirmer", "continuer", "continue", "next", "suivant",
+            "se connecter", "log in", "login", "connexion", "je me connecte", "sign in"
+        ]
+        skip_keywords = ["search", "cookie", "accept", "menu", "close", "fermer", "chercher", "annuler", "cancel"]
 
-            ss_before = await self.browser.take_screenshot(f"{tc_id}_before_login")
-            result["screenshots"].append({
-                "label": "form_before_login",
-                "url": await self.browser.get_page_url(),
-                "page_title": await self.browser.get_page_title(),
-                "path": ss_before,
-            })
-
-            await self._fill_fields(test_case, page_info, credentials)
-
-            ss_filled = await self.browser.take_screenshot(f"{tc_id}_filled")
-            result["screenshots"].append({
-                "label": "form_filled",
-                "url": await self.browser.get_page_url(),
-                "page_title": await self.browser.get_page_title(),
-                "path": ss_filled,
-            })
-
-            lang = page_info.get("language", "en")
-            await self.browser.click_submit(lang=lang)
-
-            original_url = url
-            original_content_hash = hashlib.md5((await self.browser.get_page_text()).lower().encode()).hexdigest()
-
-            for _ in range(15):
-                await asyncio.sleep(1)
-                current_text = (await self.browser.get_page_text()).lower()
-                current_hash = hashlib.md5(current_text.encode()).hexdigest()
-                if current_hash != original_content_hash:
+        best_btn = None
+        for btn in buttons:
+            text = btn.get("text", "").lower()
+            bid = btn.get("id", "").lower()
+            bname = btn.get("name", "").lower()
+            combined = f"{text} {bid} {bname}"
+            
+            # Skip buttons that are clearly not submit buttons
+            if any(sk in combined for sk in skip_keywords):
+                continue
+                
+            for kw in submit_keywords:
+                if kw in combined:
+                    best_btn = btn
                     break
-                if await self.browser.has_error_message():
-                    break
+            if best_btn: break
 
-            ss_after = await self.browser.take_screenshot(f"{tc_id}_after_submit")
-            page_text = await self.browser.get_page_text()
-            final_url = await self.browser.get_page_url()
-            page_title = await self.browser.get_page_title()
+        target = best_btn or (buttons[0] if buttons else None)
+        if not target:
+            return False
 
-            has_error = await self.browser.has_error_message()
-            if has_error:
-                label = "error_state"
-            elif original_url not in final_url:
-                label = "page_after_login"
-            else:
-                label = "page_after_submit"
+        identifier = target.get("id") or target.get("name") or target.get("text")
+        print(f"  🖱️ Clicking submit: '{identifier}'")
+        
+        # Robust click strategy: prioritize actual button elements
+        selectors = []
+        if target.get("id"): selectors.append(f"#{target['id']}")
+        if target.get("name"): selectors.append(f"button[name='{target['name']}'], input[name='{target['name']}']")
+        
+        # Priority 1: Real button/input tags with this text
+        if target.get("text"):
+            selectors.append(f"button:has-text('{target['text']}')")
+            selectors.append(f"input[value='{target['text']}']")
+            selectors.append(f"input[type='submit'][value*='{target['text']}']")
+        
+        # Priority 2: Any element with this text that has a button role
+        if target.get("text"):
+            selectors.append(f"[role='button']:has-text('{target['text']}')")
+            
+        # Last resort: generic text (may hit a header, so we try this last)
+        if target.get("text"):
+            selectors.append(f"text='{target['text']}'")
 
-            result["screenshots"].append({
-                "label": label,
-                "url": final_url,
-                "page_title": page_title,
-                "path": ss_after,
-            })
-
-            print(f"🔍 [VERIFY] Verifying: {tc_id}...")
-
-            verification = test_case.get("verification", {})
-            url_change_expected = verification.get("url_change", True)
-
-            llm_result = verify_result(page_text, lang, verification)
-
-            passed = False
-            if llm_result["result"] == "success":
-                passed = url_change_expected
-            elif llm_result["result"] == "failure":
-                passed = not url_change_expected
-            else:
-                for _ in range(10):
-                    await asyncio.sleep(0.5)
-                    current_url = await self.browser.get_page_url()
-                    page_text = await self.browser.get_page_text()
-                    if original_url not in current_url:
-                        passed = url_change_expected
-                        break
-                    if await self.browser.has_error_message():
-                        passed = not url_change_expected
-                        break
-                else:
-                    passed = not url_change_expected
-
-            if not passed:
-                ss_error = await self.browser.take_screenshot(f"{tc_id}_error")
-                result["screenshots"].append({
-                    "label": "error_state",
-                    "url": await self.browser.get_page_url(),
-                    "page_title": await self.browser.get_page_title(),
-                    "path": ss_error,
-                })
-                raise Exception(f"Verification failed: {llm_result.get('reason', 'expected state not reached')}")
-
-        except Exception as e:
-            print(f"❌ [ACT/VERIFY] Test {tc_id} failed: {e}")
-            result["status"] = "failed"
-            result["error"] = str(e)
-
-        return result
+        for sel in selectors:
+            try:
+                success = await self.browser.click_element(sel)
+                if success:
+                    await asyncio.sleep(1)
+                    return True
+            except:
+                continue
+        
+        # Final fallback
+        return await self.browser.click_element(f"text='{identifier}'")
 
     async def _fill_fields(self, test_case: dict, page_info: dict, credentials: dict = None):
         steps = test_case.get("steps", [])

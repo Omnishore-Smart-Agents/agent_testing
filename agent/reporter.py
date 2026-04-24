@@ -9,11 +9,17 @@ class Reporter:
     def __init__(self):
         pass
 
-    def report(self, results, url: str = None):
-        print("[REPORT] Generating test report...")
-        passed_count = sum(1 for r in results if r["status"] == "passed")
-        failed_count = sum(1 for r in results if r["status"] == "failed")
-
+    def report(self, results):
+        """
+        Generates final structured report (JSON) for the ReAct session.
+        Each 'result' in the list can be either a completed step or a summary dict.
+        """
+        print("[REPORT] Generating final test report...")
+        
+        # Count outcomes from the ReAct result list
+        passed_count = sum(1 for r in results if r.get("status") in ("passed", "completed"))
+        failed_count = sum(1 for r in results if r.get("status") == "failed")
+        
         summary = {
             "timestamp": datetime.now().isoformat(),
             "target_url": url,
@@ -32,22 +38,16 @@ class Reporter:
             report_path = "output/report.json"
 
         with open(report_path, "w", encoding="utf-8") as f:
-            json.dump(summary, f, indent=4)
-
-        latest_path = "output/report_latest.json"
-        with open(latest_path, "w", encoding="utf-8") as f:
-            json.dump(summary, f, indent=4)
-
+            json.dump(summary, f, indent=4, ensure_ascii=False)
+            
         print(f"[REPORT] Report saved to {report_path}")
         print(f"--- SUMMARY ---")
         print(f"Total: {len(results)} | Passed: {passed_count} | Failed: {failed_count}")
 
         for res in results:
-            if res["status"] == "failed":
-                screenshots = res.get("screenshots", [])
-                screenshot_path = screenshots[-1]["path"] if screenshots else None
+            if res.get("status") == "failed":
                 create_failure_card(
-                    test_id=res["test_case"].get("id"),
+                    test_id=res.get("test_id", "UNKNOWN"),
                     error_details=res.get("error"),
                     screenshot_path=screenshot_path
                 )

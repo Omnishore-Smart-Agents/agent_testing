@@ -1,24 +1,19 @@
 import os
 import asyncio
+import re
 from playwright.async_api import async_playwright
 
-SUBMIT_BUTTONS_BY_LANG = {
-    "en": ["submit", "login", "sign in", "log in", "log in", "register", "sign up", "create account", "join", "continue"],
-    "fr": ["connexion", "se connecter", "s'inscrire", "submit", "valider", "envoyer", "créer un compte", "inscription", "continuer"],
-    "ar": ["تسجيل الدخول", "إنشاء حساب", "إرسال", "تسجيل", "دخول", "تسجيل الدخول"],
-    "es": ["iniciar sesión", "entrar", "registrarse", "submit", "enviar", "crear cuenta", "continuar"],
-    "de": ["anmelden", "einloggen", "registrieren", "submit", "weiter", "konto erstellen"],
-    "pt": ["entrar", "iniciar sessão", "registrar", "submit", "criar conta", "continuar"],
-    "it": ["accedi", "entra", "registrati", "submit", "crea account", "continua"],
-    "zh": ["登录", "提交", "注册", "登陆", "登录", "立即注册"],
-    "ja": ["ログイン", "submit", "新規登録", "サインイン", "サインアップ"],
-    "ko": ["로그인", "제출", "회원가입", "로그인", "회원 등록"],
-    "ru": ["войти", "войти в аккаунт", "зарегистрироваться", "submit", "создать аккаунт"],
-    "tr": ["giriş yap", "üye ol", "submit", "kaydol", "hesap oluştur"],
-    "nl": ["aanmelden", "inloggen", "registreren", "submit", "doorgaan"],
-    "pl": ["zaloguj się", "zarejestruj się", "submit", "utwórz konto", "kontynuuj"],
-    "uk": ["увійти", "зареєструватися", "submit", "створити акаунт"],
-}
+# Keywords for detecting registration/login links (multi-language)
+REGISTER_KEYWORDS = [
+    "sign up", "signup", "register", "create account", "join",
+    "s'inscrire", "inscription", "adhérez", "créer un compte",
+    "créer compte", "nouveau compte", "enregistrer", "adhérer",
+    "create one", "no account", "new user", "get started"
+]
+LOGIN_KEYWORDS = [
+    "sign in", "signin", "log in", "login", "se connecter",
+    "connexion", "connecter", "je me connecte"
+]
 
 
 class BrowserWrapper:
@@ -104,219 +99,296 @@ class BrowserWrapper:
         return False
 
     async def open_page(self, url: str):
-        for attempt in range(5):
-            try:
-                await self.page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                await asyncio.sleep(3)
-                title = await self.page.title()
-                if "Access Denied" in title or "403" in title or "blocked" in title.lower():
-                    if attempt < 4:
-                        await asyncio.sleep(5)
-                        continue
-                return
-            except Exception as e:
-                if attempt == 4:
-                    raise
-                await asyncio.sleep(5)
+        await self.page.goto(url, wait_until="networkidle", timeout=60000)
+        await self.dismiss_cookie_banners()
+        await asyncio.sleep(1)
 
-    async def extract_inputs(self):
+    async def dismiss_cookie_banners(self):
+        cookie_selectors = [
+            "button:has-text('Accept All')",
+            "button:has-text('Accepter')",
+            "button:has-text('Accept')",
+            "button:has-text('I Agree')",
+            "button:has-text('OK')",
+            "#onetrust-accept-btn-handler",
+            ".cookie-accept",
+            ".accept-cookies"
+        ]
+        for sel in cookie_selectors:
+            try:
+                loc = self.page.locator(sel).first
+                if await loc.count() > 0 and await loc.is_visible():
+                    await loc.click(timeout=2000)
+                    await asyncio.sleep(1)
+                    return
+            except Exception:
+                pass
+
+    # ── Page Analysis (Python heuristics, no LLM needed) ──
+
+    async def find_links_by_keywords(self, keywords: list) -> list:
+        """Find visible <a> links whose text matches any of the keywords."""
+        results = []
+        links = await self.page.query_selector_all("a:visible")
+        for link in links:
+            text = (await link.inner_text()).strip().lower()
+            for kw in keywords:
+                if kw in text:
+                    href = await link.get_attribute("href") or ""
+                    results.append({"text": (await link.inner_text()).strip(), "href": href, "element": link})
+                    break
+        return results
+
+    async def find_register_link(self):
+        """Find the best registration link on the current page."""
+        return await self.find_links_by_keywords(REGISTER_KEYWORDS)
+
+    async def find_login_link(self):
+        """Find login link on current page."""
+        return await self.find_links_by_keywords(LOGIN_KEYWORDS)
+
+    async def get_form_fields(self) -> list:
+        """Extract all visible form fields (inputs, selects, textareas) with metadata."""
         fields = []
-        selectors = ["input", "select", "textarea"]
-        for sel in selectors:
-            elements = await self.page.query_selector_all(sel)
-            for el in elements:
-                atype = await el.get_attribute("type")
-                aname = await el.get_attribute("name")
-                aid = await el.get_attribute("id")
-                aplaceholder = await el.get_attribute("placeholder")
-                atag = await el.evaluate("e => e.tagName")
-                alabel_text = ""
-                field_id = aid or aname or aplaceholder or ""
-                if field_id:
-                    label_el = await self.page.query_selector(f"label[for='{field_id}']")
-                    if label_el:
-                        alabel_text = await label_el.inner_text()
-                if atag.lower() == "input" and atype in ["hidden", "submit", "button"]:
+        # Text inputs
+        inputs = await self.page.query_selector_all("input:not([type='hidden'])")
+        for inp in inputs:
+            try:
+                if not await inp.is_visible():
                     continue
-                fields.append({
-                    "type": atype or atag.lower(),
-                    "name": aname,
-                    "id": aid,
-                    "placeholder": aplaceholder,
-                    "label": alabel_text.strip() if alabel_text else ""
-                })
+            except:
+                continue
+            field = {
+                "tag": "input",
+                "type": await inp.get_attribute("type") or "text",
+                "name": await inp.get_attribute("name") or "",
+                "id": await inp.get_attribute("id") or "",
+                "placeholder": await inp.get_attribute("placeholder") or "",
+            }
+            # Skip search fields, buttons, and hidden-like inputs
+            if field["type"] in ("hidden", "search", "checkbox", "radio", "button", "submit"):
+                continue
+            # Skip search bar and custom combobox inputs (they have generic ids)
+            fid = field["id"].lower()
+            if fid in ("q", "search") or fid.startswith("cb"):
+                continue
+            if field["name"] or field["id"] or field["placeholder"]:
+                fields.append(field)
+
+        # Selects
+        try:
+            selects = await self.page.query_selector_all("select")
+            for sel in selects:
+                try:
+                    if not await sel.is_visible():
+                        continue
+                    options = await sel.query_selector_all("option")
+                    option_values = []
+                    for opt in options[:12]:
+                        val = await opt.get_attribute("value") or ""
+                        text = (await opt.inner_text()).strip()
+                        if val and val != "":
+                            option_values.append({"value": val, "text": text})
+                    fields.append({
+                        "tag": "select",
+                        "name": await sel.get_attribute("name") or "",
+                        "id": await sel.get_attribute("id") or "",
+                        "options": option_values
+                    })
+                except Exception:
+                    continue
+        except Exception as e:
+            print(f"  ⚠️ Warning: Could not extract selects: {e}")
+
+        # Textareas
+        textareas = await self.page.query_selector_all("textarea:visible")
+        for ta in textareas:
+            fields.append({
+                "tag": "textarea",
+                "name": await ta.get_attribute("name") or "",
+                "id": await ta.get_attribute("id") or "",
+                "placeholder": await ta.get_attribute("placeholder") or "",
+            })
+
         return fields
 
-    async def detect_language(self) -> tuple[str, str]:
-        html_lang = await self.page.get_attribute("html", "lang")
-        if html_lang:
-            lang = html_lang.split("-")[0].lower()
-        else:
-            text = await self.page.inner_text("body")
-            lang = self._guess_language_from_text(text[:500])
-        self.current_lang = lang
-        self.current_dir = "rtl" if lang == "ar" else "ltr"
-        return lang, self.current_dir
-
-    def _guess_language_from_text(self, text: str) -> str:
-        lang_map = {
-            "bienvenue": "fr", "connexion": "fr", "s'inscrire": "fr", "mot de passe": "fr",
-            "iniciar sesión": "es", "registrarse": "es", "contraseña": "es",
-            "anmelden": "de", "registrieren": "de", "passwort": "de",
-            "login": "en", "sign in": "en", "password": "en",
-            "登录": "zh", "注册": "zh", "登陆": "zh",
-            "로그인": "ko", "회원가입": "ko",
-            "войти": "ru", "зарегистрироваться": "ru",
-            "giriş": "tr", "kaydol": "tr",
-            "aanmelden": "nl", "registreren": "nl",
-            "zaloguj": "pl", "zarejestruj": "pl",
-            "увійти": "uk", "зареєструватися": "uk",
-        }
-        text_lower = text.lower()
-        for keyword, lang in lang_map.items():
-            if keyword in text_lower:
-                return lang
-        return "en"
-
-    async def detect_form_type(self) -> str:
-        text = await self.page.inner_text("body")
-        text_lower = text.lower()
-        signup_keywords = ["sign up", "register", "créer un compte", "s'inscrire", "registrarse", "registrieren", "зарегистрироваться", "注册", "회원가입", "新規登録", "cadastro", "inscription", "crear cuenta", "crea account", "join now"]
-        reset_keywords = ["forgot password", "reset", "oublié", "mot de passe oublié", "recuperar contraseña", "recuperar senha", "找回密码", "비밀번호 찾기", "забыли пароль", "şifremi unuttum", "wachtwoord"]
-        for kw in signup_keywords:
-            if kw in text_lower:
-                return "signup"
-        for kw in reset_keywords:
-            if kw in text_lower:
-                return "reset_password"
-        return "login"
-
-    async def get_all_buttons(self) -> list[str]:
-        buttons = await self.page.query_selector_all("button, input[type='submit'], input[type='button']")
-        texts = []
+    async def get_visible_buttons(self) -> list:
+        """Get visible and enabled buttons, excluding common 'cancel' buttons."""
+        results = []
+        skip_words = ["annuler", "cancel", "fermer", "close", "retour", "back", "reset"]
+        
+        # Select buttons and inputs that look like buttons
+        buttons = await self.page.query_selector_all("button:visible, input[type='submit']:visible, input[type='button']:visible")
+        
         for btn in buttons:
-            text = (await btn.inner_text() or "").strip()
-            if text:
-                texts.append(text.lower())
-            val = await btn.get_attribute("value")
-            if val:
-                texts.append(val.lower())
-        return texts
+            try:
+                # Check if disabled
+                is_disabled = await btn.evaluate("el => el.disabled || el.classList.contains('disabled') || el.getAttribute('aria-disabled') === 'true'")
+                if is_disabled:
+                    continue
+                
+                tag = await btn.evaluate("el => el.tagName.toLowerCase()")
+                text = ""
+                if tag == "input":
+                    text = await btn.get_attribute("value") or ""
+                else:
+                    text = (await btn.inner_text()).strip()
+                
+                bid = await btn.get_attribute("id") or ""
+                bname = await btn.get_attribute("name") or ""
+                
+                # Combined check for skip keywords
+                full_id = (text + " " + bid + " " + bname).lower()
+                if any(sw in full_id for sw in skip_words):
+                    continue
+                
+                if text or bid:
+                    results.append({"text": text, "id": bid, "name": bname})
+            except Exception:
+                continue
+        return results
 
-    async def fill_field(self, field_identifier: str, value: str):
+    async def is_captcha_present(self) -> bool:
+        """Detect presence of reCAPTCHA or other common captcha iframes."""
+        captcha_selectors = [
+            "iframe[src*='recaptcha']",
+            "iframe[title*='reCAPTCHA']",
+            ".g-recaptcha",
+            "#captcha",
+            ".captcha-container"
+        ]
+        for sel in captcha_selectors:
+            try:
+                loc = self.page.locator(sel)
+                if await loc.count() > 0:
+                    return True
+            except:
+                pass
+        return False
+
+    # ── Actions ──
+
+    async def fill_field(self, identifier: str, value: str):
+        """Fill a text field using simulation of real typing for better event triggering."""
+        clean = re.sub(r'^(name|id)[\"\':=\s]+', '', identifier, flags=re.IGNORECASE).strip('\'"').strip()
         selectors = [
-            f"input[name='{field_identifier}']",
-            f"input[id='{field_identifier}']",
-            f"input[placeholder*='{field_identifier}']",
-            f"#{field_identifier}",
+            f"input[name='{clean}']",
+            f"input[id='{clean}']",
+            f"#{clean}",
+            f"input[placeholder*='{clean}' i]",
+            f"textarea[name='{clean}']"
         ]
         for sel in selectors:
             try:
-                if await self.page.locator(sel).count() > 0:
-                    await self.page.fill(sel, value, timeout=5000)
+                loc = self.page.locator(sel).first
+                if await loc.count() > 0:
+                    await loc.click() # Focus first
+                    await loc.fill("") # Clear
+                    await loc.type(value, delay=50) # Type like a human
                     return True
             except Exception:
                 continue
+        return False
+
+    async def select_option(self, identifier: str, value: str):
+        """Select an option in a <select> dropdown by value or label."""
+        clean = re.sub(r'^(name|id)[\"\':=\s]+', '', identifier, flags=re.IGNORECASE).strip('\'"').strip()
+        selectors = [
+            f"select[name='{clean}']",
+            f"select[id='{clean}']",
+            f"#{clean}",
+        ]
+        for sel in selectors:
+            try:
+                loc = self.page.locator(sel).first
+                if await loc.count() > 0:
+                    # 1. Try by value or label exactly
+                    try:
+                        await loc.select_option(value=value, timeout=1000)
+                        return True
+                    except:
+                        try:
+                            await loc.select_option(label=value, timeout=1000)
+                            return True
+                        except:
+                            pass
+                    
+                    # 2. Smart Fuzzy Match: Look at all options
+                    options = await loc.locator("option").all()
+                    for opt in options:
+                        opt_val = await opt.get_attribute("value") or ""
+                        opt_text = (await opt.inner_text()).strip()
+                        
+                        # Match if value ends with the number (ex: '_02')
+                        # or if value is exactly the number
+                        # or if text contains the number
+                        clean_val = value.zfill(2) # '2' -> '02'
+                        if opt_val.endswith(f"_{value}") or opt_val.endswith(f"_{clean_val}") or \
+                           value == opt_val or clean_val == opt_val or \
+                           value in opt_text:
+                            await loc.select_option(value=opt_val, timeout=1000)
+                            return True
+            except Exception:
+                continue
+        return False
+
+    async def click_element(self, identifier: str):
+        """Click an element by text, id, or selector with force and JS fallback."""
+        clean = re.sub(r'^(name|id|text)[\"\':=\s]+', '', identifier, flags=re.IGNORECASE).strip('\'"').strip()
+        
+        # Strategies to try in order
+        strategies = [
+            f"#{clean}",
+            f"button:has-text(\"{clean}\")",
+            f"a:has-text(\"{clean}\")",
+            f"input[type='submit'][value*='{clean}']",
+            f"text='{clean}'",
+            identifier # If it's already a selector
+        ]
+        
+        for sel in strategies:
+            try:
+                loc = self.page.locator(sel).first
+                if await loc.count() > 0:
+                    # 1. Try real click with force
+                    try:
+                        await loc.click(timeout=2000, force=True)
+                        return True
+                    except:
+                        # 2. Try JS fallback
+                        await loc.evaluate("el => el.click()")
+                        return True
+            except Exception:
+                continue
+        return False
+
+    async def click_link_element(self, link_element):
+        """Directly click a Playwright element handle."""
         try:
-            labels = await self.page.query_selector_all("label")
-            for label in labels:
-                text = (await label.inner_text() or "").strip().lower()
-                if field_identifier.lower() in text:
-                    for_attr = await label.get_attribute("for")
-                    if for_attr:
-                        await self.page.fill(f"#{for_attr}", value, timeout=5000)
-                        return True
-        except Exception:
-            pass
-        raise Exception(f"Could not find field: '{field_identifier}'")
+            await link_element.click(timeout=5000, force=True)
+            await self.wait_for_load()
+            return True
+        except Exception as e:
+            print(f"  Click failed: {e}")
+            return False
 
-    async def click_submit(self, lang: str = "en", form_type: str = "login"):
-        submit_texts_by_lang = {
-            "en": ["submit", "login", "sign in", "log in", "register", "log in", "continue", "send"],
-            "fr": ["connexion", "se connecter", "s'inscrire", "submit", "valider", "envoyer", "continuer", "créer un compte", "inscription"],
-            "ar": ["تسجيل الدخول", "إنشاء حساب", "إرسال", "تسجيل"],
-            "es": ["iniciar sesión", "entrar", "registrarse", "submit", "enviar", "continuar"],
-            "de": ["anmelden", "einloggen", "registrieren", "submit", "weiter"],
-            "pt": ["entrar", "iniciar sessão", "registrar", "submit", "continuar"],
-            "it": ["accedi", "entra", "registrati", "submit", "continua"],
-            "zh": ["登录", "提交", "注册", "登陆", "continuar"],
-            "ja": ["ログイン", "submit", "新規登録", "sign in"],
-            "ko": ["로그인", "제출", "회원가입"],
-            "ru": ["войти", "зарегистрироваться", "submit"],
-            "tr": ["giriş yap", "kaydol", "submit", "devam"],
-            "nl": ["aanmelden", "registreren", "submit", "doorgaan"],
-            "pl": ["zaloguj się", "zarejestruj się", "submit", "kontynuuj"],
-            "uk": ["увійти", "зареєструватися", "submit"],
-        }
-        submit_texts = submit_texts_by_lang.get(lang, submit_texts_by_lang["en"])
+    # ── Utility ──
 
-        all_btns = await self.page.query_selector_all("button, input[type='submit'], input[type='button']")
-        for btn in all_btns:
-            try:
-                is_visible = await btn.is_visible()
-                is_disabled = await btn.get_attribute("disabled")
-                if not is_visible or is_disabled is not None:
-                    continue
-                text = (await btn.inner_text() or "").strip().lower()
-                val = (await btn.get_attribute("value") or "").strip().lower()
-                for kw in submit_texts:
-                    if kw in text or kw in val:
-                        await btn.click(timeout=5000)
-                        return True
-            except Exception:
-                continue
+    async def get_page_url(self):
+        return self.page.url
 
-        for btn in all_btns:
-            try:
-                is_visible = await btn.is_visible()
-                is_disabled = await btn.get_attribute("disabled")
-                if is_visible and is_disabled is None:
-                    atype = await btn.get_attribute("type")
-                    if atype in ("submit", "button", "") or atype is None:
-                        await btn.click(timeout=5000)
-                        return True
-            except Exception:
-                continue
-
-        raise Exception("Submit button not found.")
+    async def get_page_text(self):
+        """Get all visible text on the page for verification."""
+        return await self.page.inner_text("body")
 
     async def wait_for_load(self):
         try:
             await self.page.wait_for_load_state("networkidle", timeout=5000)
-        except Exception:
+        except:
             pass
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.5)
 
-    async def wait_for_post_login(self, original_url: str, timeout: int = 15) -> str:
-        """Attend que la page change après login (URL ou contenu dynamique)."""
-        success_indicators = [
-            "logout", "deconnexion", "se déconnecter", "account", "profil", "profile",
-            "welcome", "bienvenue", "dashboard", "mon compte", "my account", "orders",
-            "commandes", "settings", "paramètres", "déconnexion", "sign out"
-        ]
-        for _ in range(timeout):
-            await asyncio.sleep(1)
-            current = self.page.url
-            page_text = (await self.get_page_text() or "").lower()
-            page_title = (await self.get_page_title() or "").lower()
-
-            if current != original_url:
-                return current
-            for indicator in success_indicators:
-                if indicator in page_text or indicator in page_title:
-                    return current
-            if "login" not in current and "sign" not in page_text:
-                return current
-
-        return self.page.url
-
-    async def get_page_title(self) -> str:
-        try:
-            return await self.page.title()
-        except Exception:
-            return ""
-
-    async def take_screenshot(self, name: str):
+    async def take_screenshot(self, name="screenshot"):
         os.makedirs("output/screenshots", exist_ok=True)
         from datetime import datetime
         import time
@@ -331,135 +403,73 @@ class BrowserWrapper:
             print(f"  📸 Screenshot failed: {e}")
             return None
 
-    async def get_page_content(self):
-        return await self.page.content()
-
-    async def get_page_text(self):
-        return await self.page.inner_text("body")
-
-    async def get_page_url(self):
-        return self.page.url
-
     async def has_error_message(self):
-        try:
-            text = await self.get_page_text()
-            text_lower = text.lower()
-            error_keywords = ["invalid", "error", "incorrect", "failed", "wrong", "not found", "denied", "non trouvé",
-                             "invalide", "erreur", "incorrect", "invalido", "incorrecto",
-                             "خطأ", "غير صالح", "无效", " ошибка", "geçersiz",
-                             "obligatoire", "requis", "required", "vide", "empty", "champ"]
-            if any(kw in text_lower for kw in error_keywords):
-                return True
-            error_elements = await self.page.query_selector_all(
-                "[class*='error'], [class*='alert'], [class*='warning'], [role='alert'], .form-error, .field-error, .help-block, .invalid-feedback"
-            )
-            for el in error_elements:
-                try:
-                    t = (await el.inner_text() or "").strip()
-                    if t:
-                        return True
-                except Exception:
-                    continue
-            return False
-        except Exception:
-            return False
-
-    async def reset_session(self):
-        try:
-            await self.context.close()
-        except Exception:
-            pass
-        try:
-            self.context = await self.browser.new_context(
-                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                viewport={"width": 1920, "height": 1080},
-                locale="fr-MA",
-                extra_http_headers={
-                    "Accept-Language": "fr-MA,fr;q=0.9,en;q=0.8",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                    "Accept-Encoding": "gzip, deflate, br",
-                    "Cache-Control": "no-cache",
-                    "Pragma": "no-cache",
-                    "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-                    "Sec-Ch-Ua-Mobile": "?0",
-                    "Sec-Ch-Ua-Platform": '"Linux"',
-                    "Sec-Fetch-Dest": "document",
-                    "Sec-Fetch-Mode": "navigate",
-                    "Sec-Fetch-Site": "none",
-                    "Sec-Fetch-User": "?1",
-                    "Upgrade-Insecure-Requests": "1",
-                }
-            )
-            self.page = await self.context.new_page()
+        """Check for error messages using error-specific CSS patterns."""
+        error_selectors = [
+            ".alert-danger", ".alert-error", ".error-message", ".error-msg",
+            ".form-error", ".field-error", ".invalid-feedback",
+            "[role='alert']", ".notification-error",
+            ".portlet-msg-error",  # Liferay-specific
+        ]
+        for sel in error_selectors:
             try:
-                from playwright_stealth import stealth
-                await stealth(self.page)
+                loc = self.page.locator(sel)
+                if await loc.count() > 0 and await loc.first.is_visible():
+                    return True
             except Exception:
                 pass
+        # Fallback: check for error-like text in prominent elements
+        error_keywords = [
+            "erreur", "error", "invalide", "invalid", "incorrect", 
+            "échoué", "failed", "obligatoire", "required", "manquant",
+            "password", "mot de passe", "identifiant"
+        ]
+        try:
+            for sel in ["h1", "h2", "h3", ".alert", ".message", ".notification"]:
+                loc = self.page.locator(sel)
+                count = await loc.count()
+                for i in range(min(count, 5)):
+                    text = (await loc.nth(i).inner_text()).lower()
+                    if any(kw in text for kw in error_keywords):
+                        return True
         except Exception:
             pass
+        return False
 
-    async def find_signup_link(self) -> str | None:
-        """Trouve et clique sur un lien d'inscription, retourne l'URL signup."""
-        from urllib.parse import urljoin
-        base = self.page.url
-
-        signup_keywords = {
-            "en": ["sign up", "register", "create account", "join", "signup"],
-            "fr": ["inscription", "s'inscrire", "créer un compte", "créer compte", "register", "join"],
-            "es": ["registrarse", "crear cuenta", "registro"],
-            "ar": ["إنشاء حساب", "تسجيل"],
-            "de": ["registrieren", "konto erstellen", "anmelden"],
-            "pt": ["registrar", "criar conta", "inscrição"],
-            "it": ["registrati", "crea account", "registrazione"],
-            "zh": ["注册", "创建账户"],
-            "ja": ["新規登録", "登録", "サインアップ"],
-            "ko": ["회원가입", "가입"],
-        }
-
-        all_links = await self.page.query_selector_all("a")
-        for link in all_links:
+    async def handle_custom_dropdowns(self):
+        """Try to interact with custom combobox dropdowns (like Title, Country)."""
+        handled = []
+        # Find custom combobox-like inputs
+        comboboxes = await self.page.query_selector_all("[role='combobox']:visible, input[id^='cb']:visible")
+        for cb in comboboxes:
             try:
-                href = await link.get_attribute("href") or ""
-                text = (await link.inner_text() or "").strip().lower()
-                for lang, keywords in signup_keywords.items():
-                    for kw in keywords:
-                        if kw in text:
-                            if href.startswith("http"):
-                                return href
-                            if href.startswith("/"):
-                                return urljoin(base, href)
-                            if href.startswith("#") or href.startswith("?"):
-                                return urljoin(base, href)
-                if "inscription" in href.lower() or "register" in href.lower() or "signup" in href.lower():
-                    if href.startswith("http"):
-                        return href
-                    if href.startswith("/"):
-                        return urljoin(base, href)
-            except Exception:
-                continue
-
-        buttons = await self.page.query_selector_all("button")
-        for btn in buttons:
-            try:
-                text = (await btn.inner_text() or "").strip().lower()
-                for lang, keywords in signup_keywords.items():
-                    for kw in keywords:
-                        if kw in text:
-                            try:
-                                await btn.click(timeout=2000)
-                                await asyncio.sleep(3)
-                                return self.page.url
-                            except Exception:
-                                pass
-            except Exception:
-                continue
-
-        return None
+                cb_id = await cb.get_attribute("id") or ""
+                if not cb_id:
+                    continue
+                # Click to open the dropdown
+                await cb.click(timeout=2000)
+                await asyncio.sleep(0.5)
+                
+                # Look for visible options that appeared
+                options = await self.page.query_selector_all(f"[role='option']:visible, [id*='{cb_id}'] li:visible, .dropdown-item:visible")
+                if options:
+                    # Click the first real option (skip empty/placeholder)
+                    for opt in options:
+                        text = (await opt.inner_text()).strip()
+                        if text and text != "--":
+                            await opt.click(timeout=2000)
+                            handled.append(f"{cb_id} -> '{text}'")
+                            await asyncio.sleep(0.3)
+                            break
+                else:
+                    # Click away to close
+                    await self.page.click("body")
+                    await asyncio.sleep(0.3)
+            except Exception as e:
+                pass
+        return handled
 
     async def close(self):
-        if self.context:
-            await self.context.close()
         if self.browser:
             await self.browser.close()
         if self.playwright:
