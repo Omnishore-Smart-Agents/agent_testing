@@ -67,6 +67,30 @@ input[type="url"] {
 }
 input[type="url"]:focus { border-color: #6366f1; }
 
+.file-upload-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 10px;
+    padding: 12px 16px;
+    color: #94a3b8;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.file-upload-btn:hover {
+    background: rgba(255,255,255,0.12);
+    color: #e2e8f0;
+}
+.file-upload-btn svg { flex-shrink: 0; }
+.file-upload-btn.has-file {
+    background: rgba(99,102,241,0.2);
+    border-color: #6366f1;
+    color: #6366f1;
+}
+
 .run-btn {
     display: flex;
     align-items: center;

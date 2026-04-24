@@ -17,6 +17,10 @@ __pycache__/
 # Dossier de sortie (rapports et screenshots)
 output/
 
+# Fichiers temporaires
+server.log
+*.docx
+
 # Outils de système d'exploitation
 .DS_Store
 Thumbs.db

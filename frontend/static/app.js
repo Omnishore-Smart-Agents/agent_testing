@@ -8,16 +8,18 @@ function escapeHTML(str) {
 document.addEventListener('DOMContentLoaded', () => {
     const runBtn = document.getElementById('run-btn');
     const urlInput = document.getElementById('url-input');
+    const mdFileInput = document.getElementById('md-file-input');
+    const fileUploadBtn = document.querySelector('.file-upload-btn');
     const statusEl = document.getElementById('agent-status');
     const resultsPanel = document.getElementById('results-panel');
     const testList = document.getElementById('test-list');
     const metricTotal = document.getElementById('metric-total');
     const metricPassed = document.getElementById('metric-passed');
     const metricFailed = document.getElementById('metric-failed');
-    const logsPanel = document.getElementById('logs-panel');
-    const logsContent = document.getElementById('logs-content');
-    const clearLogsBtn = document.getElementById('clear-logs-btn');
     const exportWordBtn = document.getElementById('export-word-btn');
+
+    // Store markdown content when file uploaded
+    let markdownContent = '';
 
     // Browser select elements
     const selectBtn = document.getElementById('browser-select-btn');
@@ -83,16 +85,40 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // ========================================
+    // MARKDOWN FILE UPLOAD
+    // ========================================
+
+    mdFileInput?.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        try {
+            const text = await file.text();
+            markdownContent = text;
+
+            // Update button to show file loaded
+            fileUploadBtn?.classList.add('has-file');
+            fileUploadBtn.querySelector('span').textContent = file.name.slice(0, 8);
+
+            // Try to extract URL from markdown if present
+            const urlMatch = text.match(/https?:\/\/[^\s\)\]]+/);
+            if (urlMatch && !urlInput.value.trim()) {
+                urlInput.value = urlMatch[0];
+            }
+
+            statusEl.textContent = `Loaded: ${file.name}`;
+            console.log('Markdown file loaded:', file.name);
+        } catch (err) {
+            statusEl.textContent = 'Error reading file: ' + err.message;
+            console.error(err);
+        }
+    });
+
+    // ========================================
     // RUN TESTS
     // ========================================
 
     runBtn.addEventListener('click', runTests);
-
-    // Clear logs button
-    clearLogsBtn?.addEventListener('click', () => {
-        if (logsContent) logsContent.innerHTML = '';
-        if (logsPanel) logsPanel.classList.add('hidden');
-    });
 
     // Export Word button
     exportWordBtn?.addEventListener('click', async () => {
@@ -139,8 +165,9 @@ document.addEventListener('DOMContentLoaded', () => {
     async function runTests() {
         const url = urlInput.value.trim();
 
-        if (!url) {
-            statusEl.textContent = 'Please enter a URL.';
+        // Need either URL or markdown content
+        if (!url && !markdownContent) {
+            statusEl.textContent = 'Please enter a URL or upload a .md file.';
             return;
         }
 
@@ -153,8 +180,6 @@ document.addEventListener('DOMContentLoaded', () => {
         setLoading(true);
         statusEl.textContent = 'Running agent...';
         resultsPanel.classList.add('hidden');
-        logsPanel.classList.remove('hidden');
-        logsContent.innerHTML = '<div class="log-line info">Initializing...</div>';
         testList.innerHTML = '';
 
         try {
@@ -163,6 +188,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     url,
+                    markdown_content: markdownContent,
                     browser: selectedBrowser
                 })
             });
@@ -198,25 +224,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function renderResults(data) {
         resultsPanel.classList.remove('hidden');
-
-        const logsPanel = document.getElementById('logs-panel');
-        const logsContent = document.getElementById('logs-content');
-        
-        if (data.logs && data.logs.length > 0) {
-            logsPanel.classList.remove('hidden');
-            logsContent.innerHTML = data.logs.map(log => {
-                let cls = 'info';
-                if (log.includes('PHASE')) cls = 'phase';
-                else if (log.includes('Browser:')) cls = 'browser';
-                else if (log.includes('✅')) cls = 'success';
-                else if (log.includes('⚠️')) cls = 'warning';
-                else if (log.includes('[THINK]')) cls = 'think';
-                else if (log.includes('📸')) cls = 'screenshot';
-                else if (log.includes('🚀 [ACT]')) cls = 'test';
-                return `<div class="log-line ${cls}">${escapeHTML(log)}</div>`;
-            }).join('');
-            logsContent.scrollTop = logsContent.scrollHeight;
-        }
 
         const results = data.results || [];
         metricTotal.textContent = data.total_tests || results.length;

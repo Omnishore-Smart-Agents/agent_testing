@@ -42,7 +42,8 @@ class BrowserWrapper:
         
         # Map chrome to chromium
         if self.browser_type == "chrome":
-            browser_launch_type = "chromium"
+            br￼
+owser_launch_type = "chromium"
         else:
             browser_launch_type = self.browser_type
         

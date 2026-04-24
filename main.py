@@ -22,8 +22,9 @@ os.makedirs("frontend", exist_ok=True)
 app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
 
 class RunRequest(BaseModel):
-    url: str
+    url: str = ""
     browser: str = "chromium"
+    markdown_content: str = ""
 
 @app.get("/")
 async def serve_ui():
@@ -31,8 +32,23 @@ async def serve_ui():
 
 @app.post("/api/run-agent")
 async def run_agent(req: RunRequest):
-    if not req.url:
-         raise HTTPException(status_code=400, detail="Missing url")
+    # Either URL or markdown_content required
+    if not req.url and not req.markdown_content:
+         raise HTTPException(status_code=400, detail="Missing url or markdown_content")
+    
+    # Determine which mode to use
+    target_url = req.url
+    markdown_spec = req.markdown_content
+    
+    # If markdown provided, extract URL from it if not separately provided
+    if markdown_spec and not target_url:
+        import re
+        url_match = re.search(r'https?://[^\s\)\]]+', markdown_spec)
+        if url_match:
+            target_url = url_match.group(0)
+    
+    if not target_url:
+        raise HTTPException(status_code=400, detail="Missing target URL in markdown or url field")
     
     # Store logs for streaming
     logs = []
@@ -43,7 +59,7 @@ async def run_agent(req: RunRequest):
     # Run the core agent logic
     agent = CoreAgent(browser_type=req.browser, log_callback=log_callback)
     
-    result = await agent.run(req.url)
+    result = await agent.run(target_url, markdown_spec=markdown_spec if markdown_spec else None)
     
     # Include logs in response
     result["logs"] = logs
