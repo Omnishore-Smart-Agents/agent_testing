@@ -134,3 +134,49 @@ class Executor:
                 await self.browser.fill_field(field_identifier=field_id, value=value)
             except Exception:
                 pass
+
+    async def execute(self, test_case: dict, url: str, page_info: dict, credentials: dict = None) -> dict:
+        """Executes a single test case."""
+        test_id = test_case.get("id", "TC_UNKNOWN")
+        print(f"\n  🧪 {test_id}: {test_case.get('description')}")
+        
+        try:
+            # 1. Fill fields
+            await self._fill_fields(test_case, page_info, credentials)
+            
+            # 2. Click submit
+            buttons = await self.browser.get_visible_buttons()
+            success = await self.click_submit(buttons)
+            
+            if not success:
+                return {"test_id": test_id, "status": "failed", "error": "Could not find or click submit button"}
+
+            # 3. Wait and verify
+            await asyncio.sleep(3)
+            page_text = await self.browser.get_page_text()
+            current_url = await self.browser.get_page_url()
+            
+            from tools.llm import verify_result
+            verification = verify_result(page_text, page_info.get("language", "en"), {"url": current_url})
+            
+            # 4. Take screenshot
+            screenshot_path = await self.browser.take_screenshot(f"result_{test_id}")
+            
+            status = "passed" if verification["result"] == "success" else "failed"
+            
+            if status == "passed":
+                print(f"  ✅ {test_id} PASSED: {verification.get('reason')}")
+            else:
+                print(f"  ❌ {test_id} FAILED: {verification.get('reason')}")
+
+            return {
+                "test_id": test_id,
+                "status": status,
+                "error": verification.get("reason") if status == "failed" else None,
+                "screenshot": screenshot_path,
+                "url": current_url
+            }
+
+        except Exception as e:
+            print(f"  💥 Error executing {test_id}: {e}")
+            return {"test_id": test_id, "status": "failed", "error": str(e)}

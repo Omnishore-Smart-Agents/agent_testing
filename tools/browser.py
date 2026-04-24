@@ -37,8 +37,7 @@ class BrowserWrapper:
         
         # Map chrome to chromium
         if self.browser_type == "chrome":
-            br￼
-owser_launch_type = "chromium"
+            browser_launch_type = "chromium"
         else:
             browser_launch_type = self.browser_type
         
@@ -369,27 +368,72 @@ owser_launch_type = "chromium"
 
     # ── Actions ──
 
-    async def fill_field(self, identifier: str, value: str):
-        """Fill a text field using simulation of real typing for better event triggering."""
-        clean = re.sub(r'^(name|id)[\"\':=\s]+', '', identifier, flags=re.IGNORECASE).strip('\'"').strip()
+    async def fill_field(self, identifier: str = None, value: str = "", field_identifier: str = None):
+        """Fill a text field using simulation of real typing. Supports both 'identifier' and 'field_identifier' keys."""
+        # Normalize the identifier
+        target_id = field_identifier or identifier
+        if not target_id:
+            return False
+            
+        clean = re.sub(r'^(name|id)[\"\':=\s]+', '', target_id, flags=re.IGNORECASE).strip('\'"').strip()
         selectors = [
             f"input[name='{clean}']",
             f"input[id='{clean}']",
             f"#{clean}",
             f"input[placeholder*='{clean}' i]",
-            f"textarea[name='{clean}']"
+            f"textarea[name='{clean}']",
+            f"[id*='{clean}' i]",
+            f"[name*='{clean}' i]"
         ]
         for sel in selectors:
             try:
                 loc = self.page.locator(sel).first
                 if await loc.count() > 0:
-                    await loc.click() # Focus first
+                    await loc.click(timeout=2000) # Focus
                     await loc.fill("") # Clear
-                    await loc.type(value, delay=50) # Type like a human
+                    await loc.type(str(value), delay=30)
                     return True
             except Exception:
                 continue
         return False
+
+    async def click_submit(self):
+        """Find and click the most likely submit button in a form."""
+        submit_selectors = [
+            "button[type='submit']",
+            "input[type='submit']",
+            "button:has-text('Sign')",
+            "button:has-text('Log')",
+            "button:has-text('Register')",
+            "button:has-text('Create')",
+            "button:has-text('Enregistrer')",
+            "button:has-text('Connexion')",
+            "button:has-text('Inscrire')",
+            ".btn-primary",
+            "form button"
+        ]
+        for sel in submit_selectors:
+            try:
+                loc = self.page.locator(sel).first
+                if await loc.count() > 0 and await loc.is_visible():
+                    await loc.click(timeout=3000)
+                    await self.wait_for_load()
+                    return True
+            except Exception:
+                continue
+        
+        # JS Fallback for any button that looks like a primary action
+        try:
+            await self.page.evaluate("""() => {
+                const btn = document.querySelector('button[type="submit"]') || 
+                            document.querySelector('input[type="submit"]') ||
+                            Array.from(document.querySelectorAll('button')).find(b => b.innerText.match(/Sign|Log|Create|Register|Connexion|Inscrire/i));
+                if (btn) btn.click();
+            }""")
+            await self.wait_for_load()
+            return True
+        except:
+            return False
 
     async def select_option(self, identifier: str, value: str):
         """Select an option in a <select> dropdown by value or label."""
@@ -505,17 +549,9 @@ owser_launch_type = "chromium"
             return None
 
     async def has_error_message(self):
-<<<<<<< HEAD
-        """Check for error messages using error-specific CSS patterns."""
-        error_selectors = [
-            ".alert-danger", ".alert-error", ".error-message", ".error-msg",
-            ".form-error", ".field-error", ".invalid-feedback",
-            "[role='alert']", ".notification-error",
-            ".portlet-msg-error",  # Liferay-specific
-        ]
-        for sel in error_selectors:
-=======
+        """Check for error messages using keywords and CSS patterns."""
         try:
+            # 1. Check by keywords in page text
             text = await self.get_page_text()
             text_lower = text.lower()
             error_keywords = ["invalid", "error", "incorrect", "failed", "wrong", "not found", "denied", "non trouvé",
@@ -524,13 +560,18 @@ owser_launch_type = "chromium"
                              "obligatoire", "requis", "required", "vide", "empty", "champ"]
             if any(kw in text_lower for kw in error_keywords):
                 return True
-            error_elements = await self.page.query_selector_all(
-                "[class*='error'], [class*='alert'], [class*='warning'], [role='alert'], .form-error, .field-error, .help-block, .invalid-feedback"
-            )
-            for el in error_elements:
+            
+            # 2. Check by CSS selectors
+            error_selectors = [
+                ".alert-danger", ".alert-error", ".error-message", ".error-msg",
+                ".form-error", ".field-error", ".invalid-feedback",
+                "[role='alert']", ".notification-error",
+                ".portlet-msg-error", "[class*='error']", "[class*='alert']"
+            ]
+            for sel in error_selectors:
                 try:
-                    t = (await el.inner_text() or "").strip()
-                    if t:
+                    loc = self.page.locator(sel)
+                    if await loc.count() > 0 and await loc.first.is_visible():
                         return True
                 except Exception:
                     continue
@@ -539,11 +580,13 @@ owser_launch_type = "chromium"
             return False
 
     async def reset_session(self):
+        """Reset the browser context to start a fresh session (session isolation)."""
         try:
             await self.context.close()
         except Exception:
             pass
         
+        # User agents based on browser type
         if self.browser_type == "firefox":
             user_agent = "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0"
             sec_ua = '"Not A;Brand";v="99", "Firefox";v="115"'
@@ -562,55 +605,20 @@ owser_launch_type = "chromium"
                 extra_http_headers={
                     "Accept-Language": "fr-MA,fr;q=0.9,en;q=0.8",
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                    "Accept-Encoding": "gzip, deflate, br",
-                    "Cache-Control": "no-cache",
-                    "Pragma": "no-cache",
                     "Sec-Ch-Ua": sec_ua,
                     "Sec-Ch-Ua-Mobile": "?0",
                     "Sec-Ch-Ua-Platform": '"Linux"',
-                    "Sec-Fetch-Dest": "document",
-                    "Sec-Fetch-Mode": "navigate",
-                    "Sec-Fetch-Site": "none",
-                    "Sec-Fetch-User": "?1",
                     "Upgrade-Insecure-Requests": "1",
                 }
             )
-            self.page = await self.context.new_page()
->>>>>>> feature/souhail
-            try:
-                loc = self.page.locator(sel)
-                if await loc.count() > 0 and await loc.first.is_visible():
-                    return True
-            except Exception:
-                pass
-        # Fallback: check for error-like text in prominent elements
-        error_keywords = [
-            "erreur", "error", "invalide", "invalid", "incorrect", 
-            "échoué", "failed", "obligatoire", "required", "manquant",
-            "password", "mot de passe", "identifiant"
-        ]
-        try:
-            for sel in ["h1", "h2", "h3", ".alert", ".message", ".notification"]:
-                loc = self.page.locator(sel)
-                count = await loc.count()
-                for i in range(min(count, 5)):
-                    text = (await loc.nth(i).inner_text()).lower()
-                    if any(kw in text for kw in error_keywords):
-                        return True
-        except Exception:
-            pass
-<<<<<<< HEAD
-        return False
-=======
             self.page = await self.context.new_page()
             try:
                 from playwright_stealth import stealth
                 await stealth(self.page)
             except Exception:
                 pass
-        except Exception:
-            pass
->>>>>>> feature/souhail
+        except Exception as e:
+            print(f"⚠️ Failed to reset session: {e}")
 
     async def handle_custom_dropdowns(self):
         """Try to interact with custom combobox dropdowns (like Title, Country)."""

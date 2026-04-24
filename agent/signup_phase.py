@@ -16,7 +16,12 @@ class SignupPhase:
             signup_url = login_url
         else:
             print(f"📝 [SIGNUP] Searching for inscription link on {login_url}")
-            signup_url = await self.browser.find_signup_link()
+            links = await self.browser.find_register_link()
+            if links:
+                from urllib.parse import urljoin
+                signup_url = urljoin(login_url, links[0]["href"])
+            else:
+                signup_url = None
     
             if not signup_url:
                 print("📝 [SIGNUP] No inscription link found, trying common paths...")
@@ -38,7 +43,7 @@ class SignupPhase:
             print(f"📝 [SIGNUP] Could not navigate: {e}")
             return None
 
-        signup_fields = await self.browser.extract_inputs()
+        signup_fields = await self.browser.get_form_fields()
         if not signup_fields:
             print("📝 [SIGNUP] No fields found on signup page")
             return None
@@ -159,6 +164,8 @@ class SignupPhase:
                 value = None
                 
                 for step in steps:
+                    if not isinstance(step, dict):
+                        continue
                     step_field = step.get("field", "").lower()
                     if step_field in field_id or step_field in field_name or step_field in field_placeholder:
                         value = step.get("value")
@@ -235,6 +242,8 @@ class SignupPhase:
                         pass
 
             for step in steps:
+                if not isinstance(step, dict):
+                    continue
                 field_id = step.get("field", "").strip()
                 field_lower = field_id.lower()
                 if field_lower in skip_keywords or not field_id:

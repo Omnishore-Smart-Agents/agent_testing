@@ -2,8 +2,11 @@ import asyncio
 from agent.executor import Executor
 from agent.reporter import Reporter
 from agent.signup_phase import SignupPhase
+from agent.observer import Observer
+from agent.planner import Planner
 from tools.browser import BrowserWrapper
 from tools.llm import generate_form_data, analyze_page_purpose
+
 class CoreAgent:
     def __init__(self, browser_type: str = "chromium", log_callback=None):
         self.browser = BrowserWrapper(browser_type=browser_type)

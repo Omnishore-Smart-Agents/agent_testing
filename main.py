@@ -72,20 +72,36 @@ async def get_logs():
         yield "data: waiting for logs\n\n"
     return StreamingResponse(generate(), media_type="text/event-stream")
 
+class ExportRequest(BaseModel):
+    url: str = ""
+    browser: str = "chromium"
+    results_data: dict = None
+
 @app.post("/api/export-word")
-async def export_word(req: RunRequest):
-    if not req.url:
-         raise HTTPException(status_code=400, detail="Missing url")
+async def export_word(req: ExportRequest):
+    print(f"[DEBUG] Export Word requested. has_results_data: {req.results_data is not None}")
     
-    # Run the agent to get fresh data
-    logs = []
-    agent = CoreAgent(browser_type=req.browser, log_callback=lambda m: logs.append(m))
-    result = await agent.run(req.url)
-    result["logs"] = logs
-    result["target_url"] = req.url
+    if req.results_data:
+        print(f"[DEBUG] Using provided results_data ({len(req.results_data.get('results', []))} tests)")
+        result = req.results_data
+        if "target_url" not in result:
+            result["target_url"] = req.url
+    else:
+        print(f"[DEBUG] No results_data provided. Falling back to running agent on {req.url}...")
+        if not req.url:
+             raise HTTPException(status_code=400, detail="Missing url or results_data")
+        agent = CoreAgent(browser_type=req.browser)
+        result = await agent.run(req.url)
+        result["target_url"] = req.url
     
     # Generate Word document
-    doc_bytes = create_test_report_docx(result)
+    try:
+        doc_bytes = create_test_report_docx(result)
+    except Exception as e:
+        import traceback
+        print(f"Error generating DOCX: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Docx generation failed: {str(e)}")
     
     # Return as downloadable file
     import time

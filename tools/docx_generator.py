@@ -97,8 +97,9 @@ def create_test_report_docx(data: dict) -> bytes:
         
         # Error message
         if res.get('error'):
-            p = doc.add_paragraph(f"Erreur: {res.get('error')}")
-            p.font.color.rgb = RGBColor(239, 68, 68)
+            p = doc.add_paragraph()
+            run = p.add_run(f"Erreur: {res.get('error')}")
+            run.font.color.rgb = RGBColor(239, 68, 68)
         
         # Screenshots
         screenshots = res.get('screenshots', [])

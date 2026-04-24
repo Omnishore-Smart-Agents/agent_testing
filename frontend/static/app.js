@@ -1,5 +1,6 @@
-// Global variable to store selected browser
+// Global variable to store selected browser and last result
 let selectedBrowser = 'chromium';
+let lastRunResult = null;
 
 function escapeHTML(str) {
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -122,6 +123,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Export Word button
     exportWordBtn?.addEventListener('click', async () => {
+        console.log('Export button clicked. lastRunResult:', lastRunResult);
+        if (!lastRunResult) {
+            alert('Veuillez d\'abord terminer un test avant d\'exporter au format Word.');
+            return;
+        }
         const url = urlInput.value.trim();
         if (!url) {
             statusEl.textContent = 'Please enter a URL first.';
@@ -137,7 +143,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     url,
-                    browser: selectedBrowser
+                    browser: selectedBrowser,
+                    results_data: lastRunResult
                 })
             });
 
@@ -201,6 +208,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             statusEl.textContent = 'Tests complete!';
+            lastRunResult = data;
             renderResults(data);
         } catch (err) {
             statusEl.textContent = 'Request failed: ' + err.message;

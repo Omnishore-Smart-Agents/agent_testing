@@ -9,14 +9,12 @@ class Reporter:
     def __init__(self):
         pass
 
-    def report(self, results):
+    def report(self, results, url: str = None):
         """
-        Generates final structured report (JSON) for the ReAct session.
-        Each 'result' in the list can be either a completed step or a summary dict.
+        Generates final structured report (JSON) for the session.
         """
         print("[REPORT] Generating final test report...")
         
-        # Count outcomes from the ReAct result list
         passed_count = sum(1 for r in results if r.get("status") in ("passed", "completed"))
         failed_count = sum(1 for r in results if r.get("status") == "failed")
         
@@ -49,7 +47,7 @@ class Reporter:
                 create_failure_card(
                     test_id=res.get("test_id", "UNKNOWN"),
                     error_details=res.get("error"),
-                    screenshot_path=screenshot_path
+                    screenshot_path=res.get("screenshot")
                 )
 
         return summary
