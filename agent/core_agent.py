@@ -322,6 +322,14 @@ class CoreAgent:
                 print("\n  ⚠️ No credentials saved. Skipping login tests.")
                 history.append("Skipped login tests - no credentials from registration.")
 
+            # DEBUG: Force a failure for Trello test
+          #  results.append({
+           ##    "description": "Simulation d'erreur pour tester Trello",
+             #   "status": "failed",
+              #  "error": "L'agent a détecté une anomalie critique (Simulation)",
+               # "screenshot": "output/screenshots/03_login_filled_debug.png"
+            #})
+
             # ══════════════════════════════════════════════
             # PHASE 4: Generate Report
             # ══════════════════════════════════════════════
