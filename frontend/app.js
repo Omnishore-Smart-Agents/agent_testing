@@ -2,6 +2,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const runBtn = document.getElementById('run-btn');
     const urlInput = document.getElementById('url-input');
     const statusText = document.getElementById('agent-status');
+    const browserSelectBtn = document.getElementById('browser-select-btn');
+    const browserSelectDropdown = document.getElementById('browser-select-dropdown');
+    const browserSelectHidden = document.getElementById('browser-select');
+    const selectedText = document.querySelector('.selected-text');
+    const optionItems = document.querySelectorAll('.option-item');
     
     const resultsPanel = document.getElementById('results-panel');
     const testList = document.getElementById('test-list');
@@ -10,6 +15,33 @@ document.addEventListener('DOMContentLoaded', () => {
     const metricPassed = document.getElementById('metric-passed');
     const metricFailed = document.getElementById('metric-failed');
     
+    // Browser select dropdown toggle
+    browserSelectBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        browserSelectDropdown.classList.toggle('hidden');
+    });
+
+    // Option selection
+    optionItems.forEach(item => {
+        item.addEventListener('click', () => {
+            const value = item.dataset.value;
+            const label = item.querySelector('span:last-child').textContent;
+            
+            selectedText.textContent = label;
+            browserSelectHidden.value = value;
+            
+            optionItems.forEach(i => i.classList.remove('selected'));
+            item.classList.add('selected');
+            
+            browserSelectDropdown.classList.add('hidden');
+        });
+    });
+
+    // Close dropdown on outside click
+    document.addEventListener('click', () => {
+        browserSelectDropdown.classList.add('hidden');
+    });
+    
     // UI states
     const setLoading = (isLoading) => {
         const btnText = runBtn.querySelector('.btn-text');
@@ -17,6 +49,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         runBtn.disabled = isLoading;
         urlInput.disabled = isLoading;
+        browserSelectBtn.disabled = isLoading;
         
         if (isLoading) {
             btnText.classList.add('hidden');
@@ -80,6 +113,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     runBtn.addEventListener('click', async () => {
         const url = urlInput.value.trim();
+        const browser = browserSelectHidden.value;
         if (!url) return;
         
         setLoading(true);
@@ -88,7 +122,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch('/api/run-agent', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url })
+                body: JSON.stringify({ url, browser })
             });
             
             const data = await response.json();
