@@ -5,342 +5,101 @@ from agent.signup_phase import SignupPhase
 from tools.browser import BrowserWrapper
 from tools.llm import generate_form_data, analyze_page_purpose
 class CoreAgent:
-    def __init__(self):
-        self.browser = BrowserWrapper()
-        self.executor = Executor(self.browser)
+    def __init__(self, browser_type: str = "chromium", log_callback=None):
+        self.browser = BrowserWrapper(browser_type=browser_type)
+        self.observer = Observer(self.browser)
+        self.planner = Planner()
         self.reporter = Reporter()
+        self.log_callback = log_callback
 
-    async def run(self, start_url: str):
+    def log(self, message: str):
+        if self.log_callback:
+            self.log_callback(message)
+        print(message)
+
+    async def run(self, url: str, markdown_spec: str = None):
         try:
             await self.browser.start()
+            
+            # Clean up old screenshots before new run
+            import shutil
+            import os
+            screenshots_dir = "output/screenshots"
+            if os.path.exists(screenshots_dir):
+                shutil.rmtree(screenshots_dir)
+            os.makedirs(screenshots_dir, exist_ok=True)
 
-            history = []
+            self.log("=" * 60)
+            self.log("PHASE 1/3: OBSERVE LOGIN PAGE")
+            self.log("=" * 60)
+            
+            # Use markdown_spec to extract page info if provided, otherwise scrape
+            if markdown_spec:
+                self.log("[INFO] Using markdown specification for test generation")
+                page_info = self._parse_markdown_spec(markdown_spec, url)
+            else:
+                page_info = await self.observer.observe(url)
+            
+            fields = page_info["fields"]
+            form_type = page_info["form_type"]
+            self.log(f"Browser: {self.browser.browser_type}")
+            self.log(f"Language: {page_info.get('language', 'unknown')} ({page_info.get('direction', 'ltr')}) | Form type: {form_type}")
+            self.log(f"Detected {len(fields)} fields")
+
+            if not fields:
+                return {"error": "No input fields found", "page_info": page_info}
+
+            credentials = None
+
+            if form_type in ("login", "unknown", "signup"):
+                self.log("\n" + "=" * 60)
+                self.log("PHASE 2/3: CREATE ACCOUNT VIA SIGNUP")
+                self.log("=" * 60)
+                signup = SignupPhase(self.browser)
+                credentials = await signup.run(url, fields, page_info)
+
+                if credentials:
+                    self.log(f"✅ Account created: {credentials['email']}")
+                else:
+                    self.log("⚠️ Could not create account — will use generated test credentials")
+
+            if not credentials:
+                self.log("\n" + "=" * 60)
+                self.log("PHASE 2/3: USING DEFAULT TEST CREDENTIALS")
+                self.log("=" * 60)
+                credentials = {
+                    "email": f"test_{abs(hash(url)) % 100000:05d}@test.com",
+                    "password": f"T3st!Pass{int.from_bytes(bytes(str(url), 'utf8'), 'little') % 100000:05d}",
+                }
+                self.log(f"Using fallback credentials: {credentials['email']}")
+
+            # Force login test cases if we're on signup page (user wants to test login, not signup)
+            current_form_type = page_info.get("form_type", "login")
+            if current_form_type == "signup":
+                self.log("[INFO] URL is signup page - will generate LOGIN test cases to test authentication")
+                page_info = {**page_info, "form_type": "login"}
+
+            self.log("\n" + "=" * 60)
+            self.log("PHASE 3/3: RUN TEST CASES")
+            self.log("=" * 60)
+            test_cases = self.planner.plan(fields, url, page_info, credentials=credentials)
+            if not test_cases:
+                return {"error": "No test cases generated", "page_info": page_info}
+
+            self.log(f"[THINK] Generated {len(test_cases)} test cases.")
             results = []
-            credentials = {}  # Will store {"email": ..., "password": ...}
+            for test in test_cases:
+                executor = Executor(self.browser)
+                res = await executor.execute(test, url, page_info, credentials=credentials)
+                results.append(res)
+                await self.browser.reset_session()
 
-            # ══════════════════════════════════════════════
-            # PHASE 1: Open URL & Find Registration
-            # ══════════════════════════════════════════════
-            # ... (no changes here) ...
-            print("\n" + "="*60)
-            print("📌 PHASE 1: Opening URL and finding registration page")
-            print("="*60)
-
-            await self.browser.open_page(start_url)
-            await self.browser.take_screenshot(name="01_initial_page")
-            current_url = await self.browser.get_page_url()
-            history.append(f"Opened {current_url}")
-
-            # Look for registration link
-            reg_links = await self.browser.find_register_link()
-
-            if reg_links:
-                print(f"  🔍 Found {len(reg_links)} registration link(s):")
-                for link in reg_links:
-                    print(f"     → '{link['text']}'")
-
-                # Click the first registration link
-                clicked = False
-                for link in reg_links:
-                    print(f"\n  🖱️ Clicking: '{link['text']}'")
-                    success = await self.browser.click_link_element(link["element"])
-                    if success:
-                        new_url = await self.browser.get_page_url()
-                        if new_url != current_url:
-                            print(f"  ✅ Navigated to: {new_url}")
-                            current_url = new_url
-                            clicked = True
-                            break
-                        else:
-                            print(f"  ⚠️ URL didn't change, trying next link...")
-
-                if not clicked:
-                    print("  ⚠️ No registration link navigated. Staying on current page.")
-                    history.append("Could not navigate to registration page.")
-            else:
-                print("  ⚠️ No registration link found on this page.")
-                history.append("No registration link found.")
-
-            await self.browser.take_screenshot(name="02_after_nav")
-
-            # ══════════════════════════════════════════════
-            # PHASE 2: Fill Registration Form
-            # ══════════════════════════════════════════════
-            print("\n" + "="*60)
-            print("📌 PHASE 2: Analyzing and filling the registration form")
-            print("="*60)
-
-            fields = await self.browser.get_form_fields()
-            buttons = await self.browser.get_visible_buttons()
-
-            if fields:
-                print(f"  🔍 Found {len(fields)} form fields:")
-                for f in fields:
-                    identifier = f.get("name") or f.get("id") or f.get("placeholder", "unknown")
-                    print(f"     → [{f['tag']}] {identifier} (type={f.get('type', '-')})")
-
-                # Ask LLM to generate test data
-                print("\n  🧠 Asking AI to generate test data...")
-                form_data = generate_form_data(fields)
-
-                if form_data:
-                    print(f"  📝 Generated data for {len(form_data)} fields")
-
-                    # Save credentials for login phase (take first email and first password only)
-                    for key, val in form_data.items():
-                        key_lower = key.lower()
-                        if "email" in key_lower and "email" not in credentials:
-                            credentials["email"] = val
-                        elif ("password" in key_lower or "pwd" in key_lower) and "password" not in credentials:
-                            credentials["password"] = val
-
-                    # Step 1: Handle custom dropdowns (Title, Country, etc.)
-                    print("\n  🎯 Handling custom dropdowns...")
-                    handled = await self.browser.handle_custom_dropdowns()
-                    if handled:
-                        for h in handled:
-                            print(f"     ✅ {h}")
-                    else:
-                        print("     (no custom dropdowns found)")
-
-                    # Step 2: Fill standard form fields
-                    print("\n  ✏️ Filling form fields...")
-                    fill_results = await self.executor.fill_form(form_data)
-                    history.append(f"Filled registration form: {fill_results}")
-
-                    # Step 3: Submit the form
-                    print("\n  📤 Submitting form...")
-                    
-                    # Check for Captcha before submitting
-                    has_captcha = await self.browser.is_captcha_present()
-                    if has_captcha:
-                        print("  🛑 CAPTCHA DETECTED! Cannot proceed autonomously.")
-                        history.append("Registration blocked by CAPTCHA.")
-                        results.append({
-                            "test_id": "REG001", 
-                            "description": "Register new account", 
-                            "status": "blocked",
-                            "error": "Manual CAPTCHA required. Agent cannot bypass this security layer."
-                        })
-                    else:
-                        await self.executor.click_submit(buttons)
-                        print("  ⏳ Waiting 10s for automatic redirection to dashboard...")
-                        await asyncio.sleep(10) 
-                        await self.browser.take_screenshot(name="03_after_registration")
-
-                        # Check result
-                        new_url = await self.browser.get_page_url()
-                        page_text = (await self.browser.get_page_text()).lower()
-                        success_keywords = ["welcome", "bienvenue", "dashboard", "logout", "déconnexion", "mon compte", "profile", "signed in", "connected"]
-                        found_success = any(kw in page_text for kw in success_keywords) or "dashboard" in new_url.lower()
-
-                        if found_success or new_url != current_url:
-                            print(f"  ✅ Registration successful! (URL: {new_url})")
-                            history.append(f"Registration successful. Redirected to {new_url}")
-                            results.append({"test_id": "REG001", "description": "Register new account", "status": "passed"})
-                        else:
-                            print("  ⚠️ Registration may have failed or was too slow.")
-                            history.append("Registration may have failed.")
-                            results.append({"test_id": "REG001", "description": "Register new account", "status": "failed",
-                                            "error": "Form submission did not redirect within 10s"})
-                else:
-                    print("  ❌ LLM could not generate form data.")
-                    results.append({"test_id": "REG001", "description": "Register new account", "status": "failed",
-                                    "error": "Could not generate test data"})
-            else:
-                print("  ⚠️ No form fields found on this page.")
-                history.append("No form fields found.")
-
-            # ══════════════════════════════════════════════
-            # PHASE 3: Test Login with Created Credentials
-            # ══════════════════════════════════════════════
-            if credentials.get("email") and credentials.get("password"):
-                print("\n" + "="*60)
-                print("📌 PHASE 3: Testing login with created credentials")
-                print("="*60)
-
-                # Check if we are already logged in (dashboard)
-                current_url = await self.browser.get_page_url()
-                page_text = (await self.browser.get_page_text()).lower()
-                
-                print(f"  🔍 Checking session state... Current URL: {current_url}")
-                
-                success_keywords = ["welcome", "bienvenue", "dashboard", "logout", "déconnexion", "mon compte", "profile", "signed in", "connected"]
-                found_kw = [kw for kw in success_keywords if kw in page_text]
-                
-                # Check by URL or by Text
-                is_dashboard_url = "dashboard" in current_url.lower() or "home" in current_url.lower() or "account" in current_url.lower()
-                is_logged_in = (len(found_kw) > 0 or is_dashboard_url) and current_url != start_url
-
-                if is_logged_in:
-                    print(f"  ✨ SUCCESS: Already logged in! (Detected via {'Keywords: ' + str(found_kw) if found_kw else 'URL: ' + current_url})")
-                    results.append({"test_id": "TC001", "description": "Login with valid credentials", "status": "passed"})
-                else:
-                    # Navigate to login page if not already there
-                    if current_url != start_url:
-                        print(f"  🔙 Not on dashboard. Navigating back to login: {start_url}")
-                        await self.browser.open_page(start_url)
-                        await asyncio.sleep(3)
-
-                    login_fields = await self.browser.get_form_fields()
-                    login_buttons = await self.browser.get_visible_buttons()
-                    
-                    # Fill and submit
-                    login_data = {}
-                    for f in login_fields:
-                        field_id = f.get("name") or f.get("id") or ""
-                        field_lower = field_id.lower()
-                        f_type = f.get("type", "").lower()
-                        if "email" in field_lower or f_type == "email" or "user" in field_lower:
-                            login_data[field_id] = credentials["email"]
-                        elif "pass" in field_lower or f_type == "password":
-                            login_data[field_id] = credentials["password"]
-
-                    if login_data:
-                        await self.executor.fill_form(login_data)
-                        await self.browser.take_screenshot(name="03_login_filled_debug")
-                        await self.executor.click_submit(login_buttons)
-                        await asyncio.sleep(8)
-                        
-                        login_url = await self.browser.get_page_url()
-                        login_text = (await self.browser.get_page_text()).lower()
-                        if any(kw in login_text for kw in success_keywords) or login_url != start_url:
-                            print("  ✅ TC001 PASSED: Login successful.")
-                            results.append({"test_id": "TC001", "description": "Login with valid credentials", "status": "passed"})
-                        else:
-                            print("  ❌ TC001 FAILED: Login did not succeed.")
-                            results.append({"test_id": "TC001", "description": "Login with valid credentials", "status": "failed"})
-
-                # Navigate back to the original login page
-                print(f"  🔙 Navigating back to: {start_url}")
-                await self.browser.open_page(start_url)
-                await asyncio.sleep(2)
-
-                # Find login form fields
-                login_fields = await self.browser.get_form_fields()
-                login_buttons = await self.browser.get_visible_buttons()
-
-                if login_fields:
-                    # === TEST CASE 1: Valid credentials ===
-                    print("\n  🧪 TC001: Login with VALID credentials")
-                    await self.browser.context.clear_cookies()
-                    await self.browser.open_page(start_url)
-                    await asyncio.sleep(2)
-                    
-                    login_fields = await self.browser.get_form_fields()
-                    login_buttons = await self.browser.get_visible_buttons()
-                    
-                    login_data = {}
-                    for f in login_fields:
-                        field_id = f.get("name") or f.get("id") or ""
-                        field_lower = field_id.lower()
-                        f_type = f.get("type", "").lower()
-                        if "email" in field_lower or f_type == "email" or "user" in field_lower:
-                            login_data[field_id] = credentials["email"]
-                        elif "pass" in field_lower or f_type == "password":
-                            login_data[field_id] = credentials["password"]
-
-                    if login_data:
-                        fill_res = await self.executor.fill_form(login_data)
-                        # DEBUG: Take screenshot before clicking to see if fields are filled
-                        await self.browser.take_screenshot(name="03_login_filled_debug")
-                        
-                        await self.executor.click_submit(login_buttons)
-                        await asyncio.sleep(8)  # Increased for slow Vercel redirects
-                        await self.browser.take_screenshot(name="04_login_valid")
-
-                        login_url = await self.browser.get_page_url()
-                        print(f"  📍 Current URL after wait: {login_url}")
-                        has_error = await self.browser.has_error_message()
-                        login_page_text = (await self.browser.get_page_text()).lower()
-                        # Keywords that indicate a successful session
-                        success_login_keywords = ["welcome", "bienvenue", "dashboard", "logout", "déconnexion", "mon compte", "profile", "signed in", "connected"]
-                        found_login_success = any(kw in login_page_text for kw in success_login_keywords)
-
-                        if (login_url != start_url or found_login_success) and not has_error:
-                            print("  ✅ TC001 PASSED: Login with valid credentials succeeded.")
-                            results.append({"test_id": "TC001", "description": "Login with valid credentials", "status": "passed"})
-                        else:
-                            print(f"  ❌ TC001 FAILED: Login did not succeed (Current URL: {login_url}).")
-                            results.append({"test_id": "TC001", "description": "Login with valid credentials", "status": "failed",
-                                            "error": f"Login did not redirect or show success message. URL is still {login_url}"})
-
-                    # === TEST CASE 2: Invalid password ===
-                    print("\n  🧪 TC002: Login with INVALID password")
-                    await self.browser.context.clear_cookies()
-                    await self.browser.open_page(start_url)
-                    await asyncio.sleep(2)
-
-                    login_fields = await self.browser.get_form_fields()
-                    login_buttons = await self.browser.get_visible_buttons()
-                    invalid_data = {}
-                    for f in login_fields:
-                        field_id = f.get("name") or f.get("id") or ""
-                        field_lower = field_id.lower()
-                        f_type = f.get("type", "").lower()
-                        if "email" in field_lower or f_type == "email" or "user" in field_lower:
-                            invalid_data[field_id] = credentials["email"]
-                        elif "pass" in field_lower or f_type == "password":
-                            invalid_data[field_id] = "WrongPassword123!"
-
-                    if invalid_data:
-                        fill_res = await self.executor.fill_form(invalid_data)
-                        await self.executor.click_submit(login_buttons)
-                        await asyncio.sleep(2)
-                        await self.browser.take_screenshot(name="05_login_invalid")
-
-                        has_error = await self.browser.has_error_message()
-                        if has_error:
-                            print("  ✅ TC002 PASSED: Invalid password correctly rejected.")
-                            results.append({"test_id": "TC002", "description": "Login with invalid password", "status": "passed"})
-                        else:
-                            print("  ❌ TC002 FAILED: No error shown for invalid password.")
-                            results.append({"test_id": "TC002", "description": "Login with invalid password", "status": "failed",
-                                            "error": "No error message displayed"})
-
-                    # === TEST CASE 3: Empty fields ===
-                    print("\n  🧪 TC003: Login with EMPTY fields")
-                    await self.browser.context.clear_cookies()
-                    await self.browser.open_page(start_url)
-                    await asyncio.sleep(2)
-
-                    login_buttons = await self.browser.get_visible_buttons()
-                    await self.executor.click_submit(login_buttons)
-                    await asyncio.sleep(2)
-                    await self.browser.take_screenshot(name="06_login_empty")
-
-                    has_error = await self.browser.has_error_message()
-                    same_url = (await self.browser.get_page_url()) == start_url or has_error
-                    if same_url:
-                        print("  ✅ TC003 PASSED: Empty submission correctly rejected.")
-                        results.append({"test_id": "TC003", "description": "Login with empty fields", "status": "passed"})
-                    else:
-                        print("  ❌ TC003 FAILED: Empty submission was not rejected.")
-                        results.append({"test_id": "TC003", "description": "Login with empty fields", "status": "failed",
-                                        "error": "Form accepted empty fields"})
-
-            else:
-                print("\n  ⚠️ No credentials saved. Skipping login tests.")
-                history.append("Skipped login tests - no credentials from registration.")
-
-            # DEBUG: Force a failure for Trello test
-          #  results.append({
-           ##    "description": "Simulation d'erreur pour tester Trello",
-             #   "status": "failed",
-              #  "error": "L'agent a détecté une anomalie critique (Simulation)",
-               # "screenshot": "output/screenshots/03_login_filled_debug.png"
-            #})
-
-            # ══════════════════════════════════════════════
-            # PHASE 4: Generate Report
-            # ══════════════════════════════════════════════
-            print("\n" + "="*60)
-            print("📌 PHASE 4: Generating test report")
-            print("="*60)
-
-            final_report = self.reporter.report(results)
-            final_report["history"] = history
-            final_report["credentials_used"] = credentials
+            final_report = self.reporter.report(results, url=url)
+            final_report["browser"] = self.browser.browser_type
+            final_report["page_info"] = page_info
+            final_report["created_credentials"] = {
+                "email": credentials.get("email") if credentials else None
+            }
             return final_report
 
         except Exception as e:
@@ -350,3 +109,69 @@ class CoreAgent:
             return {"error": repr(e)}
         finally:
             await self.browser.close()
+
+    def _parse_markdown_spec(self, markdown: str, url: str) -> dict:
+        """Parse markdown specification to extract page info and test requirements."""
+        import re
+        
+        page_info = {
+            "url": url,
+            "language": "en",
+            "direction": "ltr",
+            "form_type": "login",
+            "fields": [],
+            "labels": {},
+            "submit_buttons": [],
+            "page_title": ""
+        }
+        
+        # Extract form type
+        form_type_match = re.search(r'##\s*Form\s+Type\s*\n(.*?)(?=\n##|\Z)', markdown, re.IGNORECASE | re.DOTALL)
+        if form_type_match:
+            form_type_text = form_type_match.group(1).strip().lower()
+            if 'signup' in form_type_text or 'register' in form_type_text:
+                page_info["form_type"] = "signup"
+            elif 'reset' in form_type_text or 'password' in form_type_text:
+                page_info["form_type"] = "reset"
+            elif 'login' in form_type_text or 'signin' in form_type_text:
+                page_info["form_type"] = "login"
+        
+        # Extract fields from table or list
+        field_patterns = [
+            (r'\|\s*(\w+)\s*\|.*?\|\s*(\w+)\s*\|', re.MULTILINE | re.DOTALL),
+            (r'-\s*(\w+)\s*\(type:\s*(\w+)', 0),
+            (r'\*\s*(\w+)\s*\(type:\s*(\w+)', 0),
+            (r'(\w+)\s*:\s*(\w+)', 0),
+        ]
+        
+        extracted_fields = set()
+        
+        for pattern, flags in field_patterns:
+            matches = re.findall(pattern, markdown, re.IGNORECASE | flags)
+            for match in matches:
+                if len(match) >= 2:
+                    field_name = match[0].strip().lower()
+                    field_type = match[1].strip().lower()
+                    if field_name not in extracted_fields and field_name not in ['field', 'type', 'required', 'description']:
+                        extracted_fields.add(field_name)
+                        page_info["fields"].append({
+                            "name": field_name,
+                            "type": field_type,
+                            "required": True
+                        })
+        
+        # Extract submit button text
+        button_match = re.search(r'(?:submit|login|register|sign\s*in)\s*button', markdown, re.IGNORECASE)
+        if button_match:
+            page_info["submit_buttons"].append({
+                "text": button_match.group(0),
+                "type": "submit"
+            })
+        
+        # Extract language
+        lang_match = re.search(r'##\s*Language\s*\n(.*?)(?=\n##|\Z)', markdown, re.IGNORECASE | re.DOTALL)
+        if lang_match:
+            page_info["language"] = lang_match.group(1).strip().lower()[:2]
+        
+        self.log(f"[PARSED] From markdown: {len(page_info['fields'])} fields, form_type={page_info['form_type']}")
+        return page_info

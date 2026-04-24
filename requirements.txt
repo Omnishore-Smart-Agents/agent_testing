@@ -5,3 +5,6 @@ langchain-groq
 langchain
 python-dotenv
 pydantic
+python-docx
+Pillow
+requests

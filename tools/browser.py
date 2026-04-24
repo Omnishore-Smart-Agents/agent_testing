@@ -17,7 +17,8 @@ LOGIN_KEYWORDS = [
 
 
 class BrowserWrapper:
-    def __init__(self):
+    def __init__(self, browser_type: str = "chromium"):
+        self.browser_type = browser_type.lower()
         self.playwright = None
         self.browser = None
         self.context = None
@@ -27,9 +28,83 @@ class BrowserWrapper:
 
     async def start(self):
         self.playwright = await async_playwright().start()
-        self.browser = await self.playwright.chromium.launch(
-            headless=True,
-            args=[
+        
+        # Validate browser type
+        supported = {"chromium", "chrome", "firefox", "brave"}
+        if self.browser_type not in supported:
+            print(f"⚠️  Unsupported browser '{self.browser_type}', defaulting to chromium")
+            self.browser_type = "chromium"
+        
+        # Map chrome to chromium
+        if self.browser_type == "chrome":
+            br￼
+owser_launch_type = "chromium"
+        else:
+            browser_launch_type = self.browser_type
+        
+        # Brave is Chromium-based, needs special handling
+        # Falls back to Chromium if Brave is not installed
+        if self.browser_type == "brave":
+            import shutil
+            brave_executable = (
+                shutil.which("brave") or 
+                shutil.which("brave-browser") or 
+                os.path.expanduser("~/.local/brave/brave/brave") or
+                os.path.expanduser("~/.local/brave/brave-browser")
+            )
+            if brave_executable and os.path.exists(brave_executable):
+                self.browser = await self.playwright.chromium.launch(
+                    executable_path=brave_executable,
+                    headless=True,
+                    args=[
+                        "--disable-blink-features=AutomationControlled",
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-web-security",
+                        "--disable-extensions",
+                        "--disable-images",
+                    ]
+                )
+                print(f"🚀 Launching Brave browser (via Chromium engine)")
+                
+                user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Brave/122.0.0.0"
+                sec_ua = '"Not A;Brand";v="99", "Brave";v="122"'
+                self.context = await self.browser.new_context(
+                    user_agent=user_agent,
+                    viewport={"width": 1920, "height": 1080},
+                    locale="fr-MA",
+                    extra_http_headers={
+                        "Accept-Language": "fr-MA,fr;q=0.9,en;q=0.8",
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                        "Accept-Encoding": "gzip, deflate, br",
+                        "Cache-Control": "no-cache",
+                        "Pragma": "no-cache",
+                        "Sec-Ch-Ua": sec_ua,
+                        "Sec-Ch-Ua-Mobile": "?0",
+                        "Sec-Ch-Ua-Platform": '"Linux"',
+                        "Sec-Fetch-Dest": "document",
+                        "Sec-Fetch-Mode": "navigate",
+                        "Sec-Fetch-Site": "none",
+                        "Sec-Fetch-User": "?1",
+                        "Upgrade-Insecure-Requests": "1",
+                    }
+                )
+                self.page = await self.context.new_page()
+                try:
+                    from playwright_stealth import stealth
+                    await stealth(self.page)
+                except Exception:
+                    pass
+                return
+            else:
+                print(f"⚠️  Brave executable not found, falling back to Chromium")
+                browser_launch_type = "chromium"
+                self.browser_type = "chromium"
+        
+        # Standard browser launch for chromium/chrome/firefox
+        launch_kwargs = {
+            "headless": True,
+            "args": [
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
@@ -37,9 +112,34 @@ class BrowserWrapper:
                 "--disable-extensions",
                 "--disable-images",
             ]
-        )
+        }
+        
+        if browser_launch_type == "firefox":
+            launch_kwargs["args"].extend(["--disable-gpu"])
+            self.browser = await self.playwright.firefox.launch(**launch_kwargs)
+            print(f"🚀 Launching Firefox browser")
+        else:
+            launch_kwargs["args"].extend([
+                "--disable-background-networking",
+                "--disable-background-timer-throttling",
+            ])
+            self.browser = await self.playwright.chromium.launch(**launch_kwargs)
+            display_name = "Chrome" if self.browser_type == "chrome" else "Chromium"
+            print(f"🚀 Launching {display_name} browser")
+        
+        # Browser-specific user agents for context
+        if self.browser_type == "firefox":
+            user_agent = "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0"
+            sec_ua = '"Not A;Brand";v="99", "Firefox";v="115"'
+        elif self.browser_type == "brave":
+            user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Brave/122.0.0.0"
+            sec_ua = '"Not A;Brand";v="99", "Brave";v="122"'
+        else:
+            user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            sec_ua = '"Not A;Brand";v="99", "Chromium";v="122"'
+        
         self.context = await self.browser.new_context(
-            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            user_agent=user_agent,
             viewport={"width": 1920, "height": 1080},
             locale="fr-MA",
             extra_http_headers={
@@ -48,7 +148,7 @@ class BrowserWrapper:
                 "Accept-Encoding": "gzip, deflate, br",
                 "Cache-Control": "no-cache",
                 "Pragma": "no-cache",
-                "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+                "Sec-Ch-Ua": sec_ua,
                 "Sec-Ch-Ua-Mobile": "?0",
                 "Sec-Ch-Ua-Platform": '"Linux"',
                 "Sec-Fetch-Dest": "document",
@@ -58,6 +158,7 @@ class BrowserWrapper:
                 "Upgrade-Insecure-Requests": "1",
             }
         )
+
         self.page = await self.context.new_page()
         try:
             from playwright_stealth import stealth
@@ -404,6 +505,7 @@ class BrowserWrapper:
             return None
 
     async def has_error_message(self):
+<<<<<<< HEAD
         """Check for error messages using error-specific CSS patterns."""
         error_selectors = [
             ".alert-danger", ".alert-error", ".error-message", ".error-msg",
@@ -412,6 +514,69 @@ class BrowserWrapper:
             ".portlet-msg-error",  # Liferay-specific
         ]
         for sel in error_selectors:
+=======
+        try:
+            text = await self.get_page_text()
+            text_lower = text.lower()
+            error_keywords = ["invalid", "error", "incorrect", "failed", "wrong", "not found", "denied", "non trouvé",
+                             "invalide", "erreur", "incorrect", "invalido", "incorrecto",
+                             "خطأ", "غير صالح", "无效", " ошибка", "geçersiz",
+                             "obligatoire", "requis", "required", "vide", "empty", "champ"]
+            if any(kw in text_lower for kw in error_keywords):
+                return True
+            error_elements = await self.page.query_selector_all(
+                "[class*='error'], [class*='alert'], [class*='warning'], [role='alert'], .form-error, .field-error, .help-block, .invalid-feedback"
+            )
+            for el in error_elements:
+                try:
+                    t = (await el.inner_text() or "").strip()
+                    if t:
+                        return True
+                except Exception:
+                    continue
+            return False
+        except Exception:
+            return False
+
+    async def reset_session(self):
+        try:
+            await self.context.close()
+        except Exception:
+            pass
+        
+        if self.browser_type == "firefox":
+            user_agent = "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0"
+            sec_ua = '"Not A;Brand";v="99", "Firefox";v="115"'
+        elif self.browser_type == "brave":
+            user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Brave/122.0.0.0"
+            sec_ua = '"Not A;Brand";v="99", "Brave";v="122"'
+        else:
+            user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            sec_ua = '"Not A;Brand";v="99", "Chromium";v="122"'
+        
+        try:
+            self.context = await self.browser.new_context(
+                user_agent=user_agent,
+                viewport={"width": 1920, "height": 1080},
+                locale="fr-MA",
+                extra_http_headers={
+                    "Accept-Language": "fr-MA,fr;q=0.9,en;q=0.8",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "Cache-Control": "no-cache",
+                    "Pragma": "no-cache",
+                    "Sec-Ch-Ua": sec_ua,
+                    "Sec-Ch-Ua-Mobile": "?0",
+                    "Sec-Ch-Ua-Platform": '"Linux"',
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Site": "none",
+                    "Sec-Fetch-User": "?1",
+                    "Upgrade-Insecure-Requests": "1",
+                }
+            )
+            self.page = await self.context.new_page()
+>>>>>>> feature/souhail
             try:
                 loc = self.page.locator(sel)
                 if await loc.count() > 0 and await loc.first.is_visible():
@@ -434,7 +599,18 @@ class BrowserWrapper:
                         return True
         except Exception:
             pass
+<<<<<<< HEAD
         return False
+=======
+            self.page = await self.context.new_page()
+            try:
+                from playwright_stealth import stealth
+                await stealth(self.page)
+            except Exception:
+                pass
+        except Exception:
+            pass
+>>>>>>> feature/souhail
 
     async def handle_custom_dropdowns(self):
         """Try to interact with custom combobox dropdowns (like Title, Country)."""

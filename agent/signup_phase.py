@@ -8,12 +8,19 @@ class SignupPhase:
         self.browser = browser_wrapper
 
     async def run(self, login_url: str, login_fields: list, login_page_info: dict) -> dict | None:
-        print(f"📝 [SIGNUP] Searching for inscription link on {login_url}")
-        signup_url = await self.browser.find_signup_link()
-
-        if not signup_url:
-            print("📝 [SIGNUP] No inscription link found, trying common paths...")
-            signup_url = self._try_common_signup_urls(login_url)
+        # If current URL looks like a signup/register page, use it directly
+        signup_indicators = ["register", "signup", "sign-up", "inscription", "create-account", "createaccount"]
+        current_url_lower = login_url.lower()
+        if any(ind in current_url_lower for ind in signup_indicators):
+            print(f"📝 [SIGNUP] Already on signup page: {login_url}")
+            signup_url = login_url
+        else:
+            print(f"📝 [SIGNUP] Searching for inscription link on {login_url}")
+            signup_url = await self.browser.find_signup_link()
+    
+            if not signup_url:
+                print("📝 [SIGNUP] No inscription link found, trying common paths...")
+                signup_url = self._try_common_signup_urls(login_url)
 
         if not signup_url:
             print("📝 [SIGNUP] Could not find signup page")
@@ -61,10 +68,15 @@ class SignupPhase:
             "/en/register",
             "/fr/account/register",
             "/fr/user/register",
+            "/register.htm",
+            "/signup.htm",
+            "/create-account",
         ]
+        paths_fixed = []
         for path in paths:
             candidate = f"{base}{path}"
-            if candidate != base_url:
+            if candidate != base_url and candidate not in paths_fixed:
+                paths_fixed.append(candidate)
                 return candidate
         return None
 

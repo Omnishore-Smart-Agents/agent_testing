@@ -1,19 +1,179 @@
+// Global variable to store selected browser
+let selectedBrowser = 'chromium';
+
+function escapeHTML(str) {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     const runBtn = document.getElementById('run-btn');
     const urlInput = document.getElementById('url-input');
+    const mdFileInput = document.getElementById('md-file-input');
+    const fileUploadBtn = document.querySelector('.file-upload-btn');
     const statusEl = document.getElementById('agent-status');
     const resultsPanel = document.getElementById('results-panel');
     const testList = document.getElementById('test-list');
     const metricTotal = document.getElementById('metric-total');
     const metricPassed = document.getElementById('metric-passed');
     const metricFailed = document.getElementById('metric-failed');
+    const exportWordBtn = document.getElementById('export-word-btn');
+
+    // Store markdown content when file uploaded
+    let markdownContent = '';
+
+    // Browser select elements
+    const selectBtn = document.getElementById('browser-select-btn');
+    const dropdownEl = document.getElementById('browser-dropdown');
+    const selectedLabel = selectBtn?.querySelector('.selected-label');
+    const dropdownOptions = document.querySelectorAll('.dropdown-option');
+
+    // ========================================
+    // BROWSER SELECTION HANDLING
+    // ========================================
+
+    function openDropdown() {
+        selectBtn?.classList.add('open');
+        dropdownEl?.classList.remove('hidden');
+    }
+
+    function closeDropdown() {
+        selectBtn?.classList.remove('open');
+        dropdownEl?.classList.add('hidden');
+    }
+
+    // Toggle dropdown on button click
+    selectBtn?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (dropdownEl?.classList.contains('hidden')) {
+            openDropdown();
+        } else {
+            closeDropdown();
+        }
+    });
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', () => {
+        closeDropdown();
+    });
+
+    // Prevent dropdown close when clicking inside
+    dropdownEl?.addEventListener('click', (e) => {
+        e.stopPropagation();
+    });
+
+    // Handle option selection
+    dropdownOptions.forEach(option => {
+        option.addEventListener('click', () => {
+            const value = option.dataset.value;
+            const label = option.textContent;
+
+            // Update selected browser
+            selectedBrowser = value;
+
+            // Update button label
+            if (selectedLabel) selectedLabel.textContent = label;
+
+            // Update active state
+            dropdownOptions.forEach(opt => opt.classList.remove('active'));
+            option.classList.add('active');
+
+            // Close dropdown
+            closeDropdown();
+
+            console.log('Browser selected:', selectedBrowser);
+        });
+    });
+
+    // ========================================
+    // MARKDOWN FILE UPLOAD
+    // ========================================
+
+    mdFileInput?.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        try {
+            const text = await file.text();
+            markdownContent = text;
+
+            // Update button to show file loaded
+            fileUploadBtn?.classList.add('has-file');
+            fileUploadBtn.querySelector('span').textContent = file.name.slice(0, 8);
+
+            // Try to extract URL from markdown if present
+            const urlMatch = text.match(/https?:\/\/[^\s\)\]]+/);
+            if (urlMatch && !urlInput.value.trim()) {
+                urlInput.value = urlMatch[0];
+            }
+
+            statusEl.textContent = `Loaded: ${file.name}`;
+            console.log('Markdown file loaded:', file.name);
+        } catch (err) {
+            statusEl.textContent = 'Error reading file: ' + err.message;
+            console.error(err);
+        }
+    });
+
+    // ========================================
+    // RUN TESTS
+    // ========================================
 
     runBtn.addEventListener('click', runTests);
 
-    async function runTests() {
+    // Export Word button
+    exportWordBtn?.addEventListener('click', async () => {
         const url = urlInput.value.trim();
         if (!url) {
-            statusEl.textContent = 'Please enter a URL.';
+            statusEl.textContent = 'Please enter a URL first.';
+            return;
+        }
+
+        exportWordBtn.disabled = true;
+        exportWordBtn.querySelector('span').textContent = 'Generating...';
+
+        try {
+            const res = await fetch('/api/export-word', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    url,
+                    browser: selectedBrowser
+                })
+            });
+
+            if (!res.ok) throw new Error('Export failed');
+
+            const blob = await res.blob();
+            const blobUrl = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = blobUrl;
+            a.download = `rapport_test_${Date.now()}.docx`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(blobUrl);
+
+            statusEl.textContent = 'Word report downloaded!';
+        } catch (err) {
+            statusEl.textContent = 'Export failed: ' + err.message;
+        } finally {
+            exportWordBtn.disabled = false;
+            exportWordBtn.querySelector('span').textContent = 'Télécharger Word';
+        }
+    });
+
+    async function runTests() {
+        const url = urlInput.value.trim();
+
+        // Need either URL or markdown content
+        if (!url && !markdownContent) {
+            statusEl.textContent = 'Please enter a URL or upload a .md file.';
+            return;
+        }
+
+        // Validate browser selection
+        if (!selectedBrowser) {
+            statusEl.textContent = 'Please select a browser first.';
             return;
         }
 
@@ -26,7 +186,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await fetch('/api/run-agent', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url })
+                body: JSON.stringify({
+                    url,
+                    markdown_content: markdownContent,
+                    browser: selectedBrowser
+                })
             });
 
             const data = await res.json();
