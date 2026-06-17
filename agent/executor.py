@@ -94,3 +94,89 @@ class Executor:
         
         # Final fallback
         return await self.browser.click_element(f"text='{identifier}'")
+
+    async def _fill_fields(self, test_case: dict, page_info: dict, credentials: dict = None):
+        steps = test_case.get("steps", [])
+        detected_fields = page_info.get("fields", [])
+        field_ids = set()
+        for f in detected_fields:
+            if f.get("id"):
+                field_ids.add(f["id"].lower())
+            if f.get("name"):
+                field_ids.add(f["name"].lower())
+            if f.get("placeholder"):
+                field_ids.add(f["placeholder"].lower())
+
+        skip_keywords = {
+            "submit", "login", "sign in", "register", "submit button",
+            "se connecter", "connexion", "s'inscrire", "sign up", "button",
+            "login_button", "submit_button", "btn"
+        }
+
+        for step in steps:
+            field_id = step.get("field", "").strip()
+            field_lower = field_id.lower()
+            if field_lower in skip_keywords or not field_id:
+                continue
+            if field_lower not in field_ids and not any(
+                field_lower in fid for fid in field_ids
+            ):
+                continue
+
+            value = step.get("value", "")
+
+            if credentials:
+                email = credentials.get("email", "")
+                password = credentials.get("password", "")
+                value = str(value).replace("{{email}}", email).replace("{{password}}", password)
+
+            try:
+                await self.browser.fill_field(field_identifier=field_id, value=value)
+            except Exception:
+                pass
+
+    async def execute(self, test_case: dict, url: str, page_info: dict, credentials: dict = None) -> dict:
+        """Executes a single test case."""
+        test_id = test_case.get("id", "TC_UNKNOWN")
+        print(f"\n  🧪 {test_id}: {test_case.get('description')}")
+        
+        try:
+            # 1. Fill fields
+            await self._fill_fields(test_case, page_info, credentials)
+            
+            # 2. Click submit
+            buttons = await self.browser.get_visible_buttons()
+            success = await self.click_submit(buttons)
+            
+            if not success:
+                return {"test_id": test_id, "status": "failed", "error": "Could not find or click submit button"}
+
+            # 3. Wait and verify
+            await asyncio.sleep(3)
+            page_text = await self.browser.get_page_text()
+            current_url = await self.browser.get_page_url()
+            
+            from tools.llm import verify_result
+            verification = verify_result(page_text, page_info.get("language", "en"), {"url": current_url})
+            
+            # 4. Take screenshot
+            screenshot_path = await self.browser.take_screenshot(f"result_{test_id}")
+            
+            status = "passed" if verification["result"] == "success" else "failed"
+            
+            if status == "passed":
+                print(f"  ✅ {test_id} PASSED: {verification.get('reason')}")
+            else:
+                print(f"  ❌ {test_id} FAILED: {verification.get('reason')}")
+
+            return {
+                "test_id": test_id,
+                "status": status,
+                "error": verification.get("reason") if status == "failed" else None,
+                "screenshot": screenshot_path,
+                "url": current_url
+            }
+
+        except Exception as e:
+            print(f"  💥 Error executing {test_id}: {e}")
+            return {"test_id": test_id, "status": "failed", "error": str(e)}
